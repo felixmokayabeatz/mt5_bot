@@ -13,3 +13,7 @@ Small Django dashboard and training helper for a MetaTrader 5 recovery bot demo 
 1. Install the Python requirements.
 2. Start the dashboard with `python manage.py runserver`.
 3. Point MT5 shared files at the same common files directory used by the app.
+
+## MT5 files
+
+Set `MT5_COMMON_FILES_DIR` when you want the dashboard and trainer to read from a custom shared folder instead of the default MetaTrader common files path.
