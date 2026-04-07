@@ -5,3 +5,5 @@ __pycache__/
 .tmp/
 db.sqlite3
 mq5_v_env/
+mt5_common_files/
+.pytest_cache/
