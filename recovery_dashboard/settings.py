@@ -12,9 +12,16 @@ def env_bool(name, default):
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_list(name, default):
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 SECRET_KEY = "dev-only-recovery-dashboard-key"
 DEBUG = env_bool("DJANGO_DEBUG", True)
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", ["127.0.0.1", "localhost"])
 
 INSTALLED_APPS = [
     "django.contrib.admin",
