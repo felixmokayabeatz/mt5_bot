@@ -26,6 +26,13 @@ class SettingsError(ValueError):
     pass
 
 
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def debug_log(message):
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[dashboard {timestamp}] {message}", flush=True)
