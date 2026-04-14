@@ -34,6 +34,8 @@ def env_flag(name, default=False):
 
 
 def debug_log(message):
+    if not env_flag("DASHBOARD_DEBUG", True):
+        return
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[dashboard {timestamp}] {message}", flush=True)
 
