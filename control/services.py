@@ -72,6 +72,17 @@ def model_file_path():
     return common_files_dir() / MODEL_FILE_NAME
 
 
+def runtime_paths():
+    return {
+        "common_files_dir": common_files_dir(),
+        "control_file": control_file_path(),
+        "status_file": status_file_path(),
+        "event_log_file": event_log_file_path(),
+        "cycle_log_file": cycle_log_file_path(),
+        "model_file": model_file_path(),
+    }
+
+
 def read_key_values(path):
     values = {}
     if not path.exists():
