@@ -19,6 +19,7 @@ from .services import (
     read_control,
     read_model,
     read_status,
+    runtime_paths,
     status_file_path,
     validate_control,
     write_control,
@@ -67,16 +68,12 @@ def dashboard(request):
 
     debug_log("dashboard opened")
     status = read_status()
+    paths = runtime_paths()
     context = {
         "control": control,
         "status": status,
         "model": read_model(),
-        "common_files_dir": common_files_dir(),
-        "control_file": control_file_path(),
-        "status_file": status_file_path(),
-        "event_log_file": event_log_file_path(),
-        "cycle_log_file": cycle_log_file_path(),
-        "model_file": model_file_path(),
+        **paths,
         "control_file_info": file_debug_info(control_file_path()),
         "status_file_info": file_debug_info(status_file_path()),
         "event_log_file_info": file_debug_info(event_log_file_path()),
