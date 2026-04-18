@@ -88,6 +88,7 @@ def dashboard(request):
 def status_api(request):
     control = read_control()
     status = read_status()
+    paths = runtime_paths()
     debug_log(
         "status poll: "
         f"enabled={control.get('enabled')} close_all={control.get('close_all')} "
@@ -98,14 +99,7 @@ def status_api(request):
             "control": control,
             "status": status,
             "model": read_model(),
-            "paths": {
-                "common_files_dir": str(common_files_dir()),
-                "control_file": str(control_file_path()),
-                "status_file": str(status_file_path()),
-                "event_log_file": str(event_log_file_path()),
-                "cycle_log_file": str(cycle_log_file_path()),
-                "model_file": str(model_file_path()),
-            },
+            "paths": {key: str(value) for key, value in paths.items()},
             "files": {
                 "control": file_debug_info(control_file_path()),
                 "status": file_debug_info(status_file_path()),
