@@ -169,6 +169,16 @@ def file_debug_info(path):
     }
 
 
+def file_info_bundle(paths):
+    return {
+        "control_file_info": file_debug_info(paths["control_file"]),
+        "status_file_info": file_debug_info(paths["status_file"]),
+        "event_log_file_info": file_debug_info(paths["event_log_file"]),
+        "cycle_log_file_info": file_debug_info(paths["cycle_log_file"]),
+        "model_file_info": file_debug_info(paths["model_file"]),
+    }
+
+
 def validate_control(post_data):
     return {
         "initial_lot": decimal_value(post_data, "initial_lot", minimum=Decimal("0.01")),
