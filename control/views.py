@@ -15,6 +15,7 @@ from .services import (
     cycle_log_file_path,
     event_log_file_path,
     file_debug_info,
+    file_info_bundle,
     model_file_path,
     read_control,
     read_model,
@@ -69,16 +70,13 @@ def dashboard(request):
     debug_log("dashboard opened")
     status = read_status()
     paths = runtime_paths()
+    file_info = file_info_bundle(paths)
     context = {
         "control": control,
         "status": status,
         "model": read_model(),
         **paths,
-        "control_file_info": file_debug_info(control_file_path()),
-        "status_file_info": file_debug_info(status_file_path()),
-        "event_log_file_info": file_debug_info(event_log_file_path()),
-        "cycle_log_file_info": file_debug_info(cycle_log_file_path()),
-        "model_file_info": file_debug_info(model_file_path()),
+        **file_info,
         "event_rows": csv_data_row_count(event_log_file_path()),
         "cycle_rows": csv_data_row_count(cycle_log_file_path()),
     }
