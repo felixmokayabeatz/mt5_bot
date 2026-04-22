@@ -87,6 +87,7 @@ def status_api(request):
     control = read_control()
     status = read_status()
     paths = runtime_paths()
+    file_info = file_info_bundle(paths)
     debug_log(
         "status poll: "
         f"enabled={control.get('enabled')} close_all={control.get('close_all')} "
@@ -99,11 +100,11 @@ def status_api(request):
             "model": read_model(),
             "paths": {key: str(value) for key, value in paths.items()},
             "files": {
-                "control": file_debug_info(control_file_path()),
-                "status": file_debug_info(status_file_path()),
-                "event_log": file_debug_info(event_log_file_path()),
-                "cycle_log": file_debug_info(cycle_log_file_path()),
-                "model": file_debug_info(model_file_path()),
+                "control": file_info["control_file_info"],
+                "status": file_info["status_file_info"],
+                "event_log": file_info["event_log_file_info"],
+                "cycle_log": file_info["cycle_log_file_info"],
+                "model": file_info["model_file_info"],
             },
             "counts": {
                 "events": csv_data_row_count(event_log_file_path()),
