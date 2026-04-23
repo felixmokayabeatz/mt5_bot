@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 from django.contrib import messages
 from django.http import JsonResponse
@@ -98,6 +99,7 @@ def status_api(request):
             "control": control,
             "status": status,
             "model": read_model(),
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "paths": {key: str(value) for key, value in paths.items()},
             "files": {
                 "control": file_info["control_file_info"],
