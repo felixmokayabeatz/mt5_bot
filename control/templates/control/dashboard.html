@@ -195,6 +195,7 @@
         document.getElementById("model-enabled").textContent =
           status.model_enabled === "1" ? "Active" : "Recording";
         document.getElementById("updated").textContent = status.updated_at || "-";
+        document.getElementById("api-generated-at").textContent = payload.generated_at || "-";
         document.getElementById("trained-state").textContent =
           model.enabled === "1" ? "Enabled" : "Recording only";
         document.getElementById("trained-rows").textContent = model.trained_rows || "0";
