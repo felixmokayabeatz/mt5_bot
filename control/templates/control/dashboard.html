@@ -205,6 +205,7 @@
         document.getElementById("trained-rows").textContent = model.trained_rows || "0";
         document.getElementById("win-loss").textContent =
           `${model.wins || "0"} / ${model.losses || "0"}`;
+        document.getElementById("model-threshold").textContent = model.threshold || "0.55";
         document.getElementById("model-reason").textContent = model.reason || "No model file yet.";
         document.getElementById("event-rows").textContent = counts.events || "0";
         document.getElementById("cycle-rows").textContent = counts.cycles || "0";
