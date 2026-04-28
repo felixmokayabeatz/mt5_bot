@@ -124,6 +124,11 @@ h2 {
   font-weight: 800;
 }
 
+.btn:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.22);
+  outline-offset: 2px;
+}
+
 .btn.primary {
   background: var(--accent);
 }
