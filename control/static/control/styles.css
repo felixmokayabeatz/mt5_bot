@@ -275,6 +275,11 @@ code {
 }
 
 @media (max-width: 860px) {
+  .shell {
+    width: min(100%, calc(100% - 22px));
+    padding: 24px 0;
+  }
+
   .topbar,
   .layout,
   .command-row,
