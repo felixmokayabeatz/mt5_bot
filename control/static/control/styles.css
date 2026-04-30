@@ -99,6 +99,16 @@ h2 {
   background: var(--panel);
   box-shadow: var(--shadow);
   padding: 22px;
+  position: relative;
+}
+
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  border-radius: 8px 8px 0 0;
+  background: linear-gradient(90deg, var(--accent), #38bdf8);
 }
 
 .panel-head {
