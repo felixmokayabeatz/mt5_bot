@@ -1,6 +1,8 @@
 @echo off
 set PROJECT_ROOT=%~dp0
+if "%DASHBOARD_HOST%"=="" set DASHBOARD_HOST=127.0.0.1
+if "%DASHBOARD_PORT%"=="" set DASHBOARD_PORT=8000
 cd /d "%PROJECT_ROOT%"
 set PYTHONPATH=%PROJECT_ROOT%.packages
 set PYTHONDONTWRITEBYTECODE=1
-python manage.py runserver 127.0.0.1:8000 --noreload
+python manage.py runserver %DASHBOARD_HOST%:%DASHBOARD_PORT% --noreload
