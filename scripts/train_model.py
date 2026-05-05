@@ -24,7 +24,19 @@ MIN_CLASS_ROWS = 5
 TRAINING_STEPS = 2500
 LEARNING_RATE = 0.05
 L2 = 0.001
-THRESHOLD = 0.55
+
+
+def env_float(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+THRESHOLD = env_float("MODEL_THRESHOLD", 0.55)
 
 
 def common_files_dir():
