@@ -17,3 +17,5 @@ Small Django dashboard and training helper for a MetaTrader 5 recovery bot demo 
 ## MT5 files
 
 Set `MT5_COMMON_FILES_DIR` when you want the dashboard and trainer to read from a custom shared folder instead of the default MetaTrader common files path.
+
+Set `MODEL_THRESHOLD` if you want the trainer to write a different decision cutoff into the generated model file.
