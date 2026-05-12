@@ -6,6 +6,8 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
+#define MODEL_FEATURE_COUNT 10
+
 //--- Input Parameters
 input group "Recovery Settings"
 input double InitialLot   = 0.01;      // Starting Lot Size
@@ -23,6 +25,14 @@ input group "Django Dashboard Control"
 input bool   InpUseDashboardControl = true;
 input string InpControlFile         = "recovery_shield_control.txt";
 input string InpStatusFile          = "recovery_shield_status.txt";
+
+input group "Logging and AI Filter"
+input bool   InpEnableCsvLogging    = true;
+input string InpEventLogFile        = "recovery_shield_events.csv";
+input string InpCycleLogFile        = "recovery_shield_cycles.csv";
+input bool   InpUseAiFilter         = true;
+input string InpModelFile           = "recovery_shield_model.txt";
+input double InpDefaultModelThreshold = 0.55;
 
 //--- Global Variables
 CTrade         trade;
@@ -42,13 +52,37 @@ int            DashboardMaxTurns = 0;
 int            DashboardMaxSpread = 0;
 datetime       LastStatusWrite = 0;
 string         LastEventSource = "init";
+string         CycleId = "";
+datetime       CycleStartedAt = 0;
+double         CycleStartBid = 0.0;
+double         CycleStartAsk = 0.0;
+int            CycleStartSpread = 0;
+double         CycleFeatures[MODEL_FEATURE_COUNT];
+double         CycleModelScore = 0.0;
+double         CycleWorstProfit = 0.0;
+bool           MaxTurnsLogged = false;
+bool           ModelFileFound = false;
+bool           ModelGateEnabled = false;
+int            ModelTrainedRows = 0;
+double         ModelThreshold = 0.55;
+double         ModelBias = 0.0;
+double         ModelMean[MODEL_FEATURE_COUNT];
+double         ModelScale[MODEL_FEATURE_COUNT];
+double         ModelWeights[MODEL_FEATURE_COUNT];
+double         LastModelScore = 0.0;
+string         ModelReason = "No model loaded yet.";
+datetime       LastModelRead = 0;
+datetime       LastModelBlockLog = 0;
 
 int OnInit() {
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(20);
+   InitializeModelDefaults();
    ReadDashboardControl();
+   ReadAiModel(true);
    EventSetTimer(1);
    SetStatus("EA initialized on " + _Symbol + ". Waiting for dashboard command.");
+   AppendEvent("EA_INIT", 0, 0.0, "initialized");
    Comment("--- RECOVERY SHIELD ---\n",
            "Status: ", LastStatus, "\n",
            "If no trade opens, check the Experts tab.");
@@ -79,6 +113,7 @@ void RunEngine(string eventSource)
    int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
 
    ReadDashboardControl();
+   ReadAiModel(false);
 
    // 1. DASHBOARD
    DrawDashboard(spread);
@@ -106,11 +141,15 @@ void RunEngine(string eventSource)
       }
    }
 
+   if(hasPosition && CycleId != "" && totalProfit < CycleWorstProfit)
+      CycleWorstProfit = totalProfit;
+
    if(DashboardCloseAll)
    {
       if(hasPosition)
       {
          SetStatus("Dashboard close-all command received.");
+         FinishCycle("dashboard_close_all", spread, totalProfit);
          CloseAll();
          ResetEA();
       }
@@ -130,6 +169,7 @@ void RunEngine(string eventSource)
       
       if(totalProfit >= ActiveTargetUSD() || timeOut) {
          if(timeOut) Print("SHIELD: Cycle timed out. Closing to prevent 24hr trap.");
+         FinishCycle(timeOut ? "timeout" : "target", spread, totalProfit);
          CloseAll();
          ResetEA();
          WriteDashboardStatus(spread, false, 0.0);
@@ -156,6 +196,14 @@ void RunEngine(string eventSource)
          return; // DON'T start a new cycle during high spread!
       }
 
+      double modelScore = 0.0;
+      if(!AiAllowsEntry(spread, modelScore))
+      {
+         DrawDashboard(spread);
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
       double entryLot = NormalizeVolume(ActiveInitialLot());
       if(trade.Buy(entryLot, _Symbol, ask, 0, 0))
       {
@@ -165,7 +213,9 @@ void RunEngine(string eventSource)
             LowerLevel = ask - (ActiveZoneHeight() * _Point);
             CurrentTurns = 1;
             CycleStartTime = TimeCurrent();
+            StartCycle(bid, ask, spread, modelScore);
             SetStatus("Initial BUY opened.");
+            AppendEvent("TRADE_BUY", spread, CurrentManagedProfit(), "initial_lot=" + DoubleToString(entryLot, 2));
          }
          else
          {
@@ -197,6 +247,7 @@ void RunEngine(string eventSource)
          {
             CurrentTurns++;
             SetStatus("Recovery SELL opened.");
+            AppendEvent("TRADE_SELL", spread, totalProfit, "recovery_lot=" + DoubleToString(nextLot, 2));
          }
          else
          {
@@ -211,12 +262,19 @@ void RunEngine(string eventSource)
          {
             CurrentTurns++;
             SetStatus("Recovery BUY opened.");
+            AppendEvent("TRADE_BUY", spread, totalProfit, "recovery_lot=" + DoubleToString(nextLot, 2));
          }
          else
          {
             LogTradeFailure("Recovery BUY");
          }
       }
+   }
+   else if(!MaxTurnsLogged)
+   {
+      MaxTurnsLogged = true;
+      SetStatus("Max turns reached. Waiting for target, timeout, or manual close.");
+      AppendEvent("MAX_TURNS_REACHED", spread, totalProfit, "max_turns=" + IntegerToString(ActiveMaxTurns()));
    }
 
    WriteDashboardStatus(spread, hasPosition, totalProfit);
@@ -234,6 +292,17 @@ void CloseAll() {
 
 void ResetEA() {
    UpperLevel = 0; LowerLevel = 0; CurrentTurns = 0; CycleStartTime = 0;
+   CycleId = "";
+   CycleStartedAt = 0;
+   CycleStartBid = 0.0;
+   CycleStartAsk = 0.0;
+   CycleStartSpread = 0;
+   CycleModelScore = 0.0;
+   CycleWorstProfit = 0.0;
+   MaxTurnsLogged = false;
+
+   for(int i = 0; i < MODEL_FEATURE_COUNT; i++)
+      CycleFeatures[i] = 0.0;
 }
 
 bool HasManagedPosition()
@@ -258,6 +327,422 @@ double CurrentManagedProfit()
    }
 
    return totalProfit;
+}
+
+void InitializeModelDefaults()
+{
+   ModelFileFound = false;
+   ModelGateEnabled = false;
+   ModelTrainedRows = 0;
+   ModelThreshold = InpDefaultModelThreshold;
+   ModelBias = 0.0;
+   LastModelScore = 0.0;
+   ModelReason = "No model file yet. Recording data.";
+
+   for(int i = 0; i < MODEL_FEATURE_COUNT; i++)
+   {
+      ModelMean[i] = 0.0;
+      ModelScale[i] = 1.0;
+      ModelWeights[i] = 0.0;
+   }
+}
+
+void ReadAiModel(bool forceRead)
+{
+   if(!InpUseAiFilter)
+   {
+      ModelGateEnabled = false;
+      ModelReason = "AI filter disabled in EA inputs.";
+      return;
+   }
+
+   if(!forceRead && LastModelRead != 0 && TimeCurrent() - LastModelRead < 5)
+      return;
+
+   LastModelRead = TimeCurrent();
+
+   int handle = FileOpen(InpModelFile,
+                         FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
+
+   if(handle == INVALID_HANDLE)
+   {
+      InitializeModelDefaults();
+      return;
+   }
+
+   bool enabled = false;
+   bool hasMean = false;
+   bool hasScale = false;
+   bool hasWeights = false;
+   ModelFileFound = true;
+   ModelGateEnabled = false;
+   ModelReason = "Model file found, but not active.";
+   ModelThreshold = InpDefaultModelThreshold;
+   ModelBias = 0.0;
+   ModelTrainedRows = 0;
+
+   while(!FileIsEnding(handle))
+   {
+      string line = FileReadString(handle);
+      int equalsAt = StringFind(line, "=");
+
+      if(equalsAt <= 0)
+         continue;
+
+      string key = StringSubstr(line, 0, equalsAt);
+      string value = StringSubstr(line, equalsAt + 1);
+
+      if(key == "enabled")
+         enabled = IsTrueValue(value);
+      else if(key == "threshold")
+         ModelThreshold = StringToDouble(value);
+      else if(key == "bias")
+         ModelBias = StringToDouble(value);
+      else if(key == "trained_rows")
+         ModelTrainedRows = (int)StringToInteger(value);
+      else if(key == "reason")
+         ModelReason = value;
+      else if(key == "mean")
+         hasMean = ParseDoubleList(value, ModelMean, MODEL_FEATURE_COUNT);
+      else if(key == "scale")
+         hasScale = ParseDoubleList(value, ModelScale, MODEL_FEATURE_COUNT);
+      else if(key == "weights")
+         hasWeights = ParseDoubleList(value, ModelWeights, MODEL_FEATURE_COUNT);
+   }
+
+   FileClose(handle);
+
+   ModelGateEnabled = (enabled && hasMean && hasScale && hasWeights);
+
+   if(!ModelGateEnabled && enabled)
+      ModelReason = "Model file is incomplete. Recording only.";
+}
+
+bool ParseDoubleList(string value, double &target[], int expectedCount)
+{
+   string parts[];
+   int count = StringSplit(value, ',', parts);
+
+   if(count < expectedCount)
+      return false;
+
+   for(int i = 0; i < expectedCount; i++)
+      target[i] = StringToDouble(parts[i]);
+
+   return true;
+}
+
+bool AiAllowsEntry(int spread, double &score)
+{
+   double features[MODEL_FEATURE_COUNT];
+   GetFeatureVector(features, spread);
+   score = ScoreModel(features);
+   LastModelScore = score;
+
+   if(!InpUseAiFilter || !ModelGateEnabled)
+      return true;
+
+   if(score >= ModelThreshold)
+      return true;
+
+   string message = "AI blocked entry. Score " + DoubleToString(score, 3) +
+                    " < " + DoubleToString(ModelThreshold, 3) + ".";
+   SetStatus(message);
+
+   if(LastModelBlockLog == 0 || TimeCurrent() - LastModelBlockLog >= 60)
+   {
+      LastModelBlockLog = TimeCurrent();
+      AppendEvent("AI_BLOCK", spread, 0.0, message);
+   }
+
+   return false;
+}
+
+double ScoreModel(double &features[])
+{
+   if(!ModelGateEnabled)
+      return 0.5;
+
+   double z = ModelBias;
+
+   for(int i = 0; i < MODEL_FEATURE_COUNT; i++)
+   {
+      double scale = ModelScale[i];
+      if(scale <= 0.0)
+         scale = 1.0;
+
+      z += ModelWeights[i] * ((features[i] - ModelMean[i]) / scale);
+   }
+
+   if(z > 30.0)
+      return 1.0;
+
+   if(z < -30.0)
+      return 0.0;
+
+   return 1.0 / (1.0 + MathExp(-z));
+}
+
+void GetFeatureVector(double &features[], int spread)
+{
+   MqlDateTime now;
+   TimeToStruct(TimeCurrent(), now);
+
+   features[0] = (double)spread;
+   features[1] = (double)now.hour;
+   features[2] = (double)now.day_of_week;
+   features[3] = CalculateAtrPoints(14);
+   features[4] = LastClosedRangePoints();
+   features[5] = CalculateMaDeltaPoints(10, 30);
+   features[6] = CalculateRsi(14);
+   features[7] = (double)ActiveZoneHeight();
+   features[8] = ActiveMultiplier();
+   features[9] = (double)ActiveMaxTurns();
+}
+
+double LastClosedRangePoints()
+{
+   double high = iHigh(_Symbol, PERIOD_CURRENT, 1);
+   double low = iLow(_Symbol, PERIOD_CURRENT, 1);
+
+   if(high <= 0.0 || low <= 0.0 || _Point <= 0.0)
+      return 0.0;
+
+   return (high - low) / _Point;
+}
+
+double CalculateAtrPoints(int period)
+{
+   if(period <= 0 || _Point <= 0.0)
+      return 0.0;
+
+   double total = 0.0;
+   int counted = 0;
+
+   for(int shift = 1; shift <= period; shift++)
+   {
+      double high = iHigh(_Symbol, PERIOD_CURRENT, shift);
+      double low = iLow(_Symbol, PERIOD_CURRENT, shift);
+      double previousClose = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
+
+      if(high <= 0.0 || low <= 0.0 || previousClose <= 0.0)
+         continue;
+
+      double trueRange = MathMax(high - low, MathMax(MathAbs(high - previousClose), MathAbs(low - previousClose)));
+      total += trueRange;
+      counted++;
+   }
+
+   if(counted == 0)
+      return 0.0;
+
+   return (total / counted) / _Point;
+}
+
+double CalculateMaDeltaPoints(int fastPeriod, int slowPeriod)
+{
+   double fastMa = SimpleMa(fastPeriod);
+   double slowMa = SimpleMa(slowPeriod);
+
+   if(fastMa <= 0.0 || slowMa <= 0.0 || _Point <= 0.0)
+      return 0.0;
+
+   return (fastMa - slowMa) / _Point;
+}
+
+double SimpleMa(int period)
+{
+   if(period <= 0)
+      return 0.0;
+
+   double total = 0.0;
+   int counted = 0;
+
+   for(int shift = 1; shift <= period; shift++)
+   {
+      double closePrice = iClose(_Symbol, PERIOD_CURRENT, shift);
+      if(closePrice <= 0.0)
+         continue;
+
+      total += closePrice;
+      counted++;
+   }
+
+   if(counted == 0)
+      return 0.0;
+
+   return total / counted;
+}
+
+double CalculateRsi(int period)
+{
+   if(period <= 0)
+      return 50.0;
+
+   double gains = 0.0;
+   double losses = 0.0;
+   int counted = 0;
+
+   for(int shift = 1; shift <= period; shift++)
+   {
+      double closeNow = iClose(_Symbol, PERIOD_CURRENT, shift);
+      double closePrevious = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
+
+      if(closeNow <= 0.0 || closePrevious <= 0.0)
+         continue;
+
+      double change = closeNow - closePrevious;
+      if(change >= 0.0)
+         gains += change;
+      else
+         losses += MathAbs(change);
+
+      counted++;
+   }
+
+   if(counted == 0)
+      return 50.0;
+
+   double averageGain = gains / counted;
+   double averageLoss = losses / counted;
+
+   if(averageLoss <= 0.0)
+      return 100.0;
+
+   double rs = averageGain / averageLoss;
+   return 100.0 - (100.0 / (1.0 + rs));
+}
+
+void StartCycle(double bid, double ask, int spread, double modelScore)
+{
+   CycleId = IntegerToString((long)TimeCurrent()) + "_" + _Symbol + "_" + IntegerToString(InpMagic);
+   CycleStartedAt = TimeCurrent();
+   CycleStartBid = bid;
+   CycleStartAsk = ask;
+   CycleStartSpread = spread;
+   CycleModelScore = modelScore;
+   CycleWorstProfit = 0.0;
+   MaxTurnsLogged = false;
+   GetFeatureVector(CycleFeatures, spread);
+   AppendEvent("CYCLE_START", spread, 0.0, "model_score=" + DoubleToString(modelScore, 4));
+}
+
+void FinishCycle(string exitReason, int spread, double totalProfit)
+{
+   if(CycleId == "")
+   {
+      AppendEvent("CYCLE_END_NO_ID", spread, totalProfit, exitReason);
+      return;
+   }
+
+   int durationSeconds = (int)(TimeCurrent() - CycleStartedAt);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   WriteCycleRow(exitReason, durationSeconds, spread, bid, ask, totalProfit);
+   AppendEvent("CYCLE_END", spread, totalProfit, exitReason);
+}
+
+void AppendEvent(string eventName, int spread, double totalProfit, string detail)
+{
+   if(!InpEnableCsvLogging)
+      return;
+
+   int handle = FileOpen(InpEventLogFile,
+                         FILE_READ | FILE_WRITE | FILE_CSV | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI,
+                         ',');
+
+   if(handle == INVALID_HANDLE)
+      return;
+
+   bool writeHeader = (FileSize(handle) == 0);
+   FileSeek(handle, 0, SEEK_END);
+
+   if(writeHeader)
+      FileWrite(handle, "timestamp", "symbol", "event", "message", "spread", "bid", "ask",
+                "turns", "total_profit", "model_score", "model_threshold", "cycle_id");
+
+   FileWrite(handle,
+             TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+             _Symbol,
+             eventName,
+             detail,
+             spread,
+             DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits),
+             DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_ASK), _Digits),
+             CurrentTurns,
+             DoubleToString(totalProfit, 2),
+             DoubleToString(LastModelScore, 4),
+             DoubleToString(ModelThreshold, 4),
+             CycleId);
+
+   FileClose(handle);
+}
+
+void WriteCycleRow(string exitReason, int durationSeconds, int exitSpread, double exitBid, double exitAsk, double totalProfit)
+{
+   if(!InpEnableCsvLogging)
+      return;
+
+   int handle = FileOpen(InpCycleLogFile,
+                         FILE_READ | FILE_WRITE | FILE_CSV | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI,
+                         ',');
+
+   if(handle == INVALID_HANDLE)
+      return;
+
+   bool writeHeader = (FileSize(handle) == 0);
+   FileSeek(handle, 0, SEEK_END);
+
+   if(writeHeader)
+      FileWrite(handle,
+                "timestamp", "cycle_id", "symbol", "exit_reason", "start_time", "end_time",
+                "duration_sec", "entry_bid", "entry_ask", "exit_bid", "exit_ask",
+                "start_spread", "exit_spread", "initial_lot", "zone_height", "multiplier",
+                "target_usd", "max_turns", "turns_used", "model_score", "model_threshold",
+                "spread", "hour", "day_of_week", "atr_points", "last_range_points",
+                "ma_delta_points", "rsi14", "feature_zone_height", "feature_multiplier",
+                "feature_max_turns", "exit_profit", "max_floating_loss", "win");
+
+   int winFlag = (totalProfit >= 0.0 ? 1 : 0);
+
+   FileWrite(handle,
+             TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+             CycleId,
+             _Symbol,
+             exitReason,
+             TimeToString(CycleStartedAt, TIME_DATE | TIME_SECONDS),
+             TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
+             durationSeconds,
+             DoubleToString(CycleStartBid, _Digits),
+             DoubleToString(CycleStartAsk, _Digits),
+             DoubleToString(exitBid, _Digits),
+             DoubleToString(exitAsk, _Digits),
+             CycleStartSpread,
+             exitSpread,
+             DoubleToString(ActiveInitialLot(), 2),
+             ActiveZoneHeight(),
+             DoubleToString(ActiveMultiplier(), 2),
+             DoubleToString(ActiveTargetUSD(), 2),
+             ActiveMaxTurns(),
+             CurrentTurns,
+             DoubleToString(CycleModelScore, 4),
+             DoubleToString(ModelThreshold, 4),
+             DoubleToString(CycleFeatures[0], 4),
+             DoubleToString(CycleFeatures[1], 4),
+             DoubleToString(CycleFeatures[2], 4),
+             DoubleToString(CycleFeatures[3], 4),
+             DoubleToString(CycleFeatures[4], 4),
+             DoubleToString(CycleFeatures[5], 4),
+             DoubleToString(CycleFeatures[6], 4),
+             DoubleToString(CycleFeatures[7], 4),
+             DoubleToString(CycleFeatures[8], 4),
+             DoubleToString(CycleFeatures[9], 4),
+             DoubleToString(totalProfit, 2),
+             DoubleToString(CycleWorstProfit, 2),
+             winFlag);
+
+   FileClose(handle);
 }
 
 void ReadDashboardControl()
@@ -348,6 +833,14 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit)
    FileWriteString(handle, "total_profit=" + DoubleToString(totalProfit, 2) + "\n");
    FileWriteString(handle, "upper_level=" + DoubleToString(UpperLevel, _Digits) + "\n");
    FileWriteString(handle, "lower_level=" + DoubleToString(LowerLevel, _Digits) + "\n");
+   FileWriteString(handle, "cycle_id=" + CycleId + "\n");
+   FileWriteString(handle, "cycle_worst_profit=" + DoubleToString(CycleWorstProfit, 2) + "\n");
+   FileWriteString(handle, "model_file_found=" + BoolFlag(ModelFileFound) + "\n");
+   FileWriteString(handle, "model_enabled=" + BoolFlag(ModelGateEnabled) + "\n");
+   FileWriteString(handle, "model_score=" + DoubleToString(LastModelScore, 4) + "\n");
+   FileWriteString(handle, "model_threshold=" + DoubleToString(ModelThreshold, 4) + "\n");
+   FileWriteString(handle, "model_trained_rows=" + IntegerToString(ModelTrainedRows) + "\n");
+   FileWriteString(handle, "model_reason=" + ModelReason + "\n");
    FileWriteString(handle, "updated_at=" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\n");
 
    FileClose(handle);
@@ -491,6 +984,7 @@ void LogTradeFailure(string action)
                     trade.ResultRetcodeDescription() +
                     ". LastError: " + IntegerToString(GetLastError());
    SetStatus(message);
+   AppendEvent("TRADE_FAILURE", (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD), CurrentManagedProfit(), message);
    ResetLastError();
 }
 
@@ -506,12 +1000,14 @@ void SetStatus(string status)
 void DrawDashboard(int spread) {
    string status = (spread <= ActiveMaxSpread()) ? "SAFE" : "TOXIC SPREAD";
    string dashboard = InpUseDashboardControl ? (DashboardEnabled ? "RUNNING" : "PAUSED") : "LOCAL INPUTS";
+   string modelStatus = InpUseAiFilter ? (ModelGateEnabled ? "ACTIVE" : "RECORDING") : "OFF";
 
    Comment("--- RECOVERY SHIELD ---\n",
            "Current Spread: ", spread, "\n",
            "Max Allowed: ", ActiveMaxSpread(), "\n",
            "Status: ", status, "\n",
            "Dashboard: ", dashboard, "\n",
+           "AI Filter: ", modelStatus, " | Score: ", DoubleToString(LastModelScore, 3), "\n",
            "EA Message: ", LastStatus, "\n",
            "Turns: ", CurrentTurns);
 }

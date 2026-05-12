@@ -99,8 +99,55 @@
             <dd id="profit">{{ status.total_profit|default:"0.00" }}</dd>
           </div>
           <div>
+            <dt>AI score</dt>
+            <dd id="model-score">{{ status.model_score|default:"0.0000" }}</dd>
+          </div>
+          <div>
+            <dt>AI filter</dt>
+            <dd id="model-enabled">{% if status.model_enabled == "1" %}Active{% else %}Recording{% endif %}</dd>
+          </div>
+          <div>
             <dt>Last update</dt>
             <dd id="updated">{{ status.updated_at|default:"-" }}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="panel ai-panel">
+        <div class="panel-head">
+          <h2>AI Model</h2>
+          <p>Trains from completed demo cycles recorded by the EA.</p>
+        </div>
+
+        <form method="post" class="train-form">
+          {% csrf_token %}
+          <button class="btn train" name="action" value="train_model" type="submit">Train Model</button>
+        </form>
+
+        <dl class="metrics">
+          <div>
+            <dt>Model state</dt>
+            <dd id="trained-state">{% if model.enabled == "1" %}Enabled{% else %}Recording only{% endif %}</dd>
+          </div>
+          <div>
+            <dt>Training rows</dt>
+            <dd id="trained-rows">{{ model.trained_rows|default:"0" }}</dd>
+          </div>
+          <div>
+            <dt>Wins / losses</dt>
+            <dd id="win-loss">{{ model.wins|default:"0" }} / {{ model.losses|default:"0" }}</dd>
+          </div>
+          <div>
+            <dt>Reason</dt>
+            <dd id="model-reason">{{ model.reason|default:"No model file yet." }}</dd>
+          </div>
+          <div>
+            <dt>Recorded events</dt>
+            <dd id="event-rows">{{ event_rows }}</dd>
+          </div>
+          <div>
+            <dt>Closed cycles</dt>
+            <dd id="cycle-rows">{{ cycle_rows }}</dd>
           </div>
         </dl>
       </section>
@@ -109,9 +156,15 @@
     <section class="footnote">
       <p>Control file exists: <strong>{{ control_file_info.exists }}</strong> | size: {{ control_file_info.size }} | modified: {{ control_file_info.modified }}</p>
       <p>Status file exists: <strong>{{ status_file_info.exists }}</strong> | size: {{ status_file_info.size }} | modified: {{ status_file_info.modified }}</p>
+      <p>Event log exists: <strong>{{ event_log_file_info.exists }}</strong> | rows: {{ event_rows }} | modified: {{ event_log_file_info.modified }}</p>
+      <p>Cycle log exists: <strong>{{ cycle_log_file_info.exists }}</strong> | rows: {{ cycle_rows }} | modified: {{ cycle_log_file_info.modified }}</p>
+      <p>Model file exists: <strong>{{ model_file_info.exists }}</strong> | modified: {{ model_file_info.modified }}</p>
       <p>Shared folder: <code>{{ common_files_dir }}</code></p>
       <p>Control file: <code>{{ control_file }}</code></p>
       <p>Status file: <code>{{ status_file }}</code></p>
+      <p>Event log: <code>{{ event_log_file }}</code></p>
+      <p>Cycle log: <code>{{ cycle_log_file }}</code></p>
+      <p>Model file: <code>{{ model_file }}</code></p>
     </section>
   </main>
 
@@ -122,6 +175,8 @@
         const payload = await response.json();
         const status = payload.status || {};
         const control = payload.control || {};
+        const model = payload.model || {};
+        const counts = payload.counts || {};
 
         document.querySelector(".status-pill").textContent =
           control.enabled === "1" ? "Running" : "Paused";
@@ -132,7 +187,18 @@
         document.getElementById("spread").textContent = status.spread || "-";
         document.getElementById("turns").textContent = status.turns || "0";
         document.getElementById("profit").textContent = status.total_profit || "0.00";
+        document.getElementById("model-score").textContent = status.model_score || "0.0000";
+        document.getElementById("model-enabled").textContent =
+          status.model_enabled === "1" ? "Active" : "Recording";
         document.getElementById("updated").textContent = status.updated_at || "-";
+        document.getElementById("trained-state").textContent =
+          model.enabled === "1" ? "Enabled" : "Recording only";
+        document.getElementById("trained-rows").textContent = model.trained_rows || "0";
+        document.getElementById("win-loss").textContent =
+          `${model.wins || "0"} / ${model.losses || "0"}`;
+        document.getElementById("model-reason").textContent = model.reason || "No model file yet.";
+        document.getElementById("event-rows").textContent = counts.events || "0";
+        document.getElementById("cycle-rows").textContent = counts.cycles || "0";
       } catch (error) {
         document.getElementById("ea-message").textContent = "Dashboard cannot read status yet.";
       }

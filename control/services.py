@@ -6,6 +6,9 @@ from pathlib import Path
 
 CONTROL_FILE_NAME = "recovery_shield_control.txt"
 STATUS_FILE_NAME = "recovery_shield_status.txt"
+EVENT_LOG_FILE_NAME = "recovery_shield_events.csv"
+CYCLE_LOG_FILE_NAME = "recovery_shield_cycles.csv"
+MODEL_FILE_NAME = "recovery_shield_model.txt"
 
 DEFAULT_CONTROL = {
     "enabled": "0",
@@ -48,6 +51,18 @@ def status_file_path():
     return common_files_dir() / STATUS_FILE_NAME
 
 
+def event_log_file_path():
+    return common_files_dir() / EVENT_LOG_FILE_NAME
+
+
+def cycle_log_file_path():
+    return common_files_dir() / CYCLE_LOG_FILE_NAME
+
+
+def model_file_path():
+    return common_files_dir() / MODEL_FILE_NAME
+
+
 def read_key_values(path):
     values = {}
     if not path.exists():
@@ -71,6 +86,32 @@ def read_control():
 
 def read_status():
     return read_key_values(status_file_path())
+
+
+def read_model():
+    values = {
+        "enabled": "0",
+        "reason": "No model file yet.",
+        "trained_rows": "0",
+        "wins": "0",
+        "losses": "0",
+        "threshold": "0.55",
+        "trained_at": "-",
+    }
+    values.update(read_key_values(model_file_path()))
+    return values
+
+
+def csv_data_row_count(path):
+    if not path.exists():
+        return 0
+
+    try:
+        line_count = sum(1 for _ in path.open("r", encoding="utf-8", errors="ignore"))
+    except OSError:
+        return 0
+
+    return max(line_count - 1, 0)
 
 
 def write_control(values):

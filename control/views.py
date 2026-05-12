@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 from django.contrib import messages
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
@@ -6,9 +10,14 @@ from .services import (
     SettingsError,
     common_files_dir,
     control_file_path,
+    csv_data_row_count,
     debug_log,
+    cycle_log_file_path,
+    event_log_file_path,
     file_debug_info,
+    model_file_path,
     read_control,
+    read_model,
     read_status,
     status_file_path,
     validate_control,
@@ -22,6 +31,15 @@ def dashboard(request):
     if request.method == "POST":
         action = request.POST.get("action", "save")
         debug_log(f"button pressed: action={action}")
+
+        if action == "train_model":
+            result = run_model_training()
+            if result.returncode == 0:
+                messages.success(request, "Model training finished. Check the AI panel.")
+            else:
+                messages.error(request, "Model training failed. Check the terminal output.")
+            return redirect("dashboard")
+
         try:
             control.update(validate_control(request.POST))
         except SettingsError as exc:
@@ -52,11 +70,20 @@ def dashboard(request):
     context = {
         "control": control,
         "status": status,
+        "model": read_model(),
         "common_files_dir": common_files_dir(),
         "control_file": control_file_path(),
         "status_file": status_file_path(),
+        "event_log_file": event_log_file_path(),
+        "cycle_log_file": cycle_log_file_path(),
+        "model_file": model_file_path(),
         "control_file_info": file_debug_info(control_file_path()),
         "status_file_info": file_debug_info(status_file_path()),
+        "event_log_file_info": file_debug_info(event_log_file_path()),
+        "cycle_log_file_info": file_debug_info(cycle_log_file_path()),
+        "model_file_info": file_debug_info(model_file_path()),
+        "event_rows": csv_data_row_count(event_log_file_path()),
+        "cycle_rows": csv_data_row_count(cycle_log_file_path()),
     }
     return render(request, "control/dashboard.html", context)
 
@@ -73,14 +100,54 @@ def status_api(request):
         {
             "control": control,
             "status": status,
+            "model": read_model(),
             "paths": {
                 "common_files_dir": str(common_files_dir()),
                 "control_file": str(control_file_path()),
                 "status_file": str(status_file_path()),
+                "event_log_file": str(event_log_file_path()),
+                "cycle_log_file": str(cycle_log_file_path()),
+                "model_file": str(model_file_path()),
             },
             "files": {
                 "control": file_debug_info(control_file_path()),
                 "status": file_debug_info(status_file_path()),
+                "event_log": file_debug_info(event_log_file_path()),
+                "cycle_log": file_debug_info(cycle_log_file_path()),
+                "model": file_debug_info(model_file_path()),
+            },
+            "counts": {
+                "events": csv_data_row_count(event_log_file_path()),
+                "cycles": csv_data_row_count(cycle_log_file_path()),
             },
         }
     )
+
+
+def run_model_training():
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    root = os.getcwd()
+    env["PYTHONPATH"] = root if not existing_pythonpath else root + os.pathsep + existing_pythonpath
+
+    command = [sys.executable, "scripts/train_model.py"]
+    debug_log("training command: " + " ".join(command))
+    result = subprocess.run(
+        command,
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    if result.stdout:
+        for line in result.stdout.splitlines():
+            debug_log("[trainer stdout] " + line)
+
+    if result.stderr:
+        for line in result.stderr.splitlines():
+            debug_log("[trainer stderr] " + line)
+
+    debug_log(f"training exited with code {result.returncode}")
+    return result

@@ -154,6 +154,20 @@ h2 {
   background: #243447;
 }
 
+.btn.train {
+  width: 100%;
+  margin-bottom: 18px;
+  background: #7c3aed;
+}
+
+.btn.train:hover {
+  background: #6d28d9;
+}
+
+.ai-panel {
+  grid-column: 1 / -1;
+}
+
 .settings-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 20px;
