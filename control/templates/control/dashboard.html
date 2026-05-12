@@ -1,0 +1,145 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recovery Shield Control</title>
+  <link rel="stylesheet" href="{% static 'control/styles.css' %}">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MetaTrader 5 Demo Control</p>
+        <h1>Recovery Shield</h1>
+      </div>
+      <div class="status-pill" data-enabled="{{ control.enabled }}">
+        {% if control.enabled == "1" %}Running{% else %}Paused{% endif %}
+      </div>
+    </header>
+
+    {% if messages %}
+      <section class="messages">
+        {% for message in messages %}
+          <div class="message {{ message.tags }}">{{ message }}</div>
+        {% endfor %}
+      </section>
+    {% endif %}
+
+    <section class="layout">
+      <form method="post" class="panel control-panel">
+        {% csrf_token %}
+        <div class="panel-head">
+          <h2>Command</h2>
+          <p>MT5 must stay open, logged in, and Algo Trading must be enabled.</p>
+        </div>
+
+        <div class="command-row">
+          <button class="btn primary" name="action" value="start" type="submit">Start EA</button>
+          <button class="btn neutral" name="action" value="pause" type="submit">Pause</button>
+          <button class="btn danger" name="action" value="close_all" type="submit">Close All</button>
+        </div>
+
+        <div class="settings-grid">
+          <label>
+            <span>Initial lot</span>
+            <input name="initial_lot" inputmode="decimal" value="{{ control.initial_lot }}">
+          </label>
+          <label>
+            <span>Zone height</span>
+            <input name="zone_height" inputmode="numeric" value="{{ control.zone_height }}">
+          </label>
+          <label>
+            <span>Multiplier</span>
+            <input name="multiplier" inputmode="decimal" value="{{ control.multiplier }}">
+          </label>
+          <label>
+            <span>Target USD</span>
+            <input name="target_usd" inputmode="decimal" value="{{ control.target_usd }}">
+          </label>
+          <label>
+            <span>Max turns</span>
+            <input name="max_turns" inputmode="numeric" value="{{ control.max_turns }}">
+          </label>
+          <label>
+            <span>Max spread</span>
+            <input name="max_spread" inputmode="numeric" value="{{ control.max_spread }}">
+          </label>
+        </div>
+
+        <button class="btn save" name="action" value="save" type="submit">Save Settings</button>
+      </form>
+
+      <section class="panel live-panel">
+        <div class="panel-head">
+          <h2>Live EA Status</h2>
+          <p>Updated by the running Expert Advisor.</p>
+        </div>
+
+        <dl class="metrics">
+          <div>
+            <dt>EA message</dt>
+            <dd id="ea-message">{{ status.ea_message|default:"No EA status yet" }}</dd>
+          </div>
+          <div>
+            <dt>Symbol</dt>
+            <dd id="symbol">{{ status.symbol|default:"-" }}</dd>
+          </div>
+          <div>
+            <dt>Spread</dt>
+            <dd id="spread">{{ status.spread|default:"-" }}</dd>
+          </div>
+          <div>
+            <dt>Turns</dt>
+            <dd id="turns">{{ status.turns|default:"0" }}</dd>
+          </div>
+          <div>
+            <dt>Net profit</dt>
+            <dd id="profit">{{ status.total_profit|default:"0.00" }}</dd>
+          </div>
+          <div>
+            <dt>Last update</dt>
+            <dd id="updated">{{ status.updated_at|default:"-" }}</dd>
+          </div>
+        </dl>
+      </section>
+    </section>
+
+    <section class="footnote">
+      <p>Control file exists: <strong>{{ control_file_info.exists }}</strong> | size: {{ control_file_info.size }} | modified: {{ control_file_info.modified }}</p>
+      <p>Status file exists: <strong>{{ status_file_info.exists }}</strong> | size: {{ status_file_info.size }} | modified: {{ status_file_info.modified }}</p>
+      <p>Shared folder: <code>{{ common_files_dir }}</code></p>
+      <p>Control file: <code>{{ control_file }}</code></p>
+      <p>Status file: <code>{{ status_file }}</code></p>
+    </section>
+  </main>
+
+  <script>
+    async function refreshStatus() {
+      try {
+        const response = await fetch("{% url 'status_api' %}", {cache: "no-store"});
+        const payload = await response.json();
+        const status = payload.status || {};
+        const control = payload.control || {};
+
+        document.querySelector(".status-pill").textContent =
+          control.enabled === "1" ? "Running" : "Paused";
+        document.querySelector(".status-pill").dataset.enabled = control.enabled || "0";
+
+        document.getElementById("ea-message").textContent = status.ea_message || "No EA status yet";
+        document.getElementById("symbol").textContent = status.symbol || "-";
+        document.getElementById("spread").textContent = status.spread || "-";
+        document.getElementById("turns").textContent = status.turns || "0";
+        document.getElementById("profit").textContent = status.total_profit || "0.00";
+        document.getElementById("updated").textContent = status.updated_at || "-";
+      } catch (error) {
+        document.getElementById("ea-message").textContent = "Dashboard cannot read status yet.";
+      }
+    }
+
+    refreshStatus();
+    setInterval(refreshStatus, 2000);
+  </script>
+</body>
+</html>
