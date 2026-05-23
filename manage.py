@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+# mt5_bot/manage.py
+# felixmokayabeatz.online
+
 import os
 import sys
 
