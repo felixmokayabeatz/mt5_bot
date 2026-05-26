@@ -33,6 +33,9 @@ The recovery logic now also has guardrails:
 - `InpMinSecondsBetweenTrades` prevents duplicate orders from tick/timer events.
 - `InpUseTrendEntry` starts new cycles in the moving-average trend direction.
 - `InpBlockCounterTrendRecovery` blocks recovery trades that fight a strong MA trend.
+- `Max lot` caps the recovery lot so a bad cycle cannot jump from small lots to oversized exposure.
+- `Max same side` limits how many buys or sells can stack in one basket.
+- `Min same-side distance` blocks another buy/sell if it is too close to an existing position of the same type.
 - `Max loss USD` is an optional dashboard emergency close. Keep it `0` to disable it.
 
 For aggressive demo scalping, use a small quick target such as `0.50` to `2.00`, a low initial lot, and a realistic max spread for the symbol.
@@ -63,7 +66,7 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.0` and the first EA build is `v1.0.0_1`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.0_1.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.1` and the current EA build is `v1.0.1_2`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.1_2.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 

@@ -11,8 +11,8 @@ CYCLE_LOG_FILE_NAME = "recovery_shield_cycles.csv"
 MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
-APP_VERSION = "v1.0.0"
-EA_BUILD_NUMBER = "1"
+APP_VERSION = "v1.0.1"
+EA_BUILD_NUMBER = "2"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 
 DEFAULT_CONTROL = {
@@ -20,10 +20,13 @@ DEFAULT_CONTROL = {
     "close_all": "0",
     "initial_lot": "0.01",
     "zone_height": "500",
-    "multiplier": "1.6",
+    "multiplier": "1.3",
     "target_usd": "0.50",
     "quick_target_usd": "0.50",
     "max_loss_usd": "0",
+    "max_lot": "0.05",
+    "max_same_side": "2",
+    "min_same_side_distance": "300",
     "max_turns": "3",
     "max_spread": "500",
 }
@@ -254,6 +257,11 @@ def validate_control(post_data):
         "target_usd": decimal_value(post_data, "target_usd", minimum=Decimal("0.01")),
         "quick_target_usd": decimal_value(post_data, "quick_target_usd", minimum=Decimal("0")),
         "max_loss_usd": decimal_value(post_data, "max_loss_usd", minimum=Decimal("0")),
+        "max_lot": decimal_value(post_data, "max_lot", minimum=Decimal("0")),
+        "max_same_side": int_value(post_data, "max_same_side", minimum=0, maximum=20),
+        "min_same_side_distance": int_value(
+            post_data, "min_same_side_distance", minimum=0, maximum=100000
+        ),
         "max_turns": int_value(post_data, "max_turns", minimum=1, maximum=20),
         "max_spread": int_value(post_data, "max_spread", minimum=1, maximum=10000),
     }

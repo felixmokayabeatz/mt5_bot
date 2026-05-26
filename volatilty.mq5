@@ -6,16 +6,16 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
-#define EA_APP_VERSION "v1.0.0"
-#define EA_BUILD_NUMBER 1
-#define EA_BUILD_VERSION "v1.0.0_1"
+#define EA_APP_VERSION "v1.0.1"
+#define EA_BUILD_NUMBER 2
+#define EA_BUILD_VERSION "v1.0.1_2"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
 input group "Recovery Settings"
 input double InitialLot   = 0.01;      // Starting Lot Size
 input int    ZoneHeight   = 500;       // Distance between Buy and Sell (Points)
-input double Multiplier   = 1.6;       // Recovery Multiplier (e.g. 1.6x)
+input double Multiplier   = 1.3;       // Recovery Multiplier (e.g. 1.3x)
 input double TargetUSD    = 1.0;       // Close all when Net Profit reaches this $ amount
 input int    MaxTurns     = 10;        // Max number of recovery trades
 
@@ -31,7 +31,10 @@ input double InpMaxFloatingLossUSD = 0.0;           // Emergency basket loss cap
 input bool   InpUseTrendEntry = true;               // Start in MA trend direction
 input bool   InpBlockCounterTrendRecovery = true;   // Do not add recovery trades against strong MA trend
 input int    InpTrendFilterPoints = 50;             // MA delta needed to call trend strong
-input int    InpMinSecondsBetweenTrades = 2;        // Trade throttle to prevent duplicate entries
+input int    InpMinSecondsBetweenTrades = 5;        // Trade throttle to prevent duplicate entries
+input double InpMaxRecoveryLot = 0.05;              // Cap recovery lot; 0 disables
+input int    InpMaxSameSidePositions = 2;           // Max buy or sell positions per cycle; 0 disables
+input int    InpMinSameSideDistancePoints = 300;    // Block same-side entries too close to existing positions
 
 input group "Django Dashboard Control"
 input bool   InpUseDashboardControl = true;
@@ -65,8 +68,11 @@ double         DashboardInitialLot = 0.0;
 int            DashboardZoneHeight = 0;
 double         DashboardMultiplier = 0.0;
 double         DashboardTargetUSD = 0.0;
-double         DashboardQuickTargetUSD = 0.0;
-double         DashboardMaxLossUSD = 0.0;
+double         DashboardQuickTargetUSD = -1.0;
+double         DashboardMaxLossUSD = -1.0;
+double         DashboardMaxLot = -1.0;
+int            DashboardMaxSameSide = -1;
+int            DashboardMinSameSideDistance = -1;
 int            DashboardMaxTurns = 0;
 int            DashboardMaxSpread = 0;
 datetime       LastStatusWrite = 0;
@@ -327,7 +333,7 @@ void RunEngine(string eventSource)
       {
          if(bid <= LowerLevel && lastType == POSITION_TYPE_BUY)
          {
-            if(!TrendAllowsRecovery(POSITION_TYPE_SELL, spread, totalProfit))
+            if(!RecoveryExposureAllows(POSITION_TYPE_SELL, bid, spread, totalProfit))
             {
                WriteDashboardStatus(spread, hasPosition, totalProfit);
                return;
@@ -349,7 +355,7 @@ void RunEngine(string eventSource)
       
          if(ask >= UpperLevel && lastType == POSITION_TYPE_SELL)
          {
-            if(!TrendAllowsRecovery(POSITION_TYPE_BUY, spread, totalProfit))
+            if(!RecoveryExposureAllows(POSITION_TYPE_BUY, ask, spread, totalProfit))
             {
                WriteDashboardStatus(spread, hasPosition, totalProfit);
                return;
@@ -459,6 +465,8 @@ void GetManagedPositionState(
    lastTime = 0;
    firstOpenPrice = 0.0;
    lastOpenPrice = 0.0;
+   ulong firstTicket = 0;
+   ulong lastTicket = 0;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -466,6 +474,7 @@ void GetManagedPositionState(
          continue;
 
       datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+      ulong positionTicket = (ulong)PositionGetInteger(POSITION_TICKET);
       double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       ENUM_POSITION_TYPE positionType = m_position.PositionType();
 
@@ -473,16 +482,18 @@ void GetManagedPositionState(
       positionCount++;
       totalProfit += m_position.Profit() + m_position.Commission() + m_position.Swap();
 
-      if(firstTime == 0 || positionTime < firstTime)
+      if(firstTime == 0 || positionTime < firstTime || (positionTime == firstTime && positionTicket < firstTicket))
       {
          firstTime = positionTime;
+         firstTicket = positionTicket;
          firstType = positionType;
          firstOpenPrice = openPrice;
       }
 
-      if(lastTime == 0 || positionTime >= lastTime)
+      if(lastTime == 0 || positionTime > lastTime || (positionTime == lastTime && positionTicket > lastTicket))
       {
          lastTime = positionTime;
+         lastTicket = positionTicket;
          lastType = positionType;
          lastOpenPrice = openPrice;
       }
@@ -577,7 +588,89 @@ bool CanTradeNow()
 
 double NextRecoveryLot()
 {
-   return NormalizeVolume(ActiveInitialLot() * MathPow(ActiveMultiplier(), CurrentTurns));
+   double volume = ActiveInitialLot() * MathPow(ActiveMultiplier(), CurrentTurns);
+   double maxLot = ActiveMaxLot();
+
+   if(maxLot > 0.0 && volume > maxLot)
+      volume = maxLot;
+
+   return NormalizeVolume(volume);
+}
+
+int CountManagedPositionsByType(ENUM_POSITION_TYPE positionType)
+{
+   int count = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(m_position.SelectByIndex(i) &&
+         m_position.Symbol() == _Symbol &&
+         m_position.Magic() == InpMagic &&
+         m_position.PositionType() == positionType)
+         count++;
+   }
+
+   return count;
+}
+
+bool HasNearbyManagedPosition(ENUM_POSITION_TYPE positionType, double price, int distancePoints)
+{
+   if(distancePoints <= 0 || _Point <= 0.0)
+      return false;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!m_position.SelectByIndex(i) ||
+         m_position.Symbol() != _Symbol ||
+         m_position.Magic() != InpMagic ||
+         m_position.PositionType() != positionType)
+         continue;
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double distance = MathAbs(price - openPrice) / _Point;
+
+      if(distance < distancePoints)
+         return true;
+   }
+
+   return false;
+}
+
+bool RecoveryExposureAllows(ENUM_POSITION_TYPE recoveryType, double price, int spread, double totalProfit)
+{
+   if(!TrendAllowsRecovery(recoveryType, spread, totalProfit))
+      return false;
+
+   string side = recoveryType == POSITION_TYPE_SELL ? "SELL" : "BUY";
+   int maxSameSide = ActiveMaxSameSidePositions();
+
+   if(maxSameSide > 0 && CountManagedPositionsByType(recoveryType) >= maxSameSide)
+   {
+      string message = "Recovery " + side + " blocked: same-side limit reached.";
+      SetStatus(message);
+      LogRecoveryBlock(spread, totalProfit, message);
+      return false;
+   }
+
+   int distancePoints = ActiveMinSameSideDistancePoints();
+   if(HasNearbyManagedPosition(recoveryType, price, distancePoints))
+   {
+      string message = "Recovery " + side + " blocked: too close to an existing " + side + ".";
+      SetStatus(message);
+      LogRecoveryBlock(spread, totalProfit, message);
+      return false;
+   }
+
+   return true;
+}
+
+void LogRecoveryBlock(int spread, double totalProfit, string message)
+{
+   if(LastRecoveryBlockLog == 0 || TimeCurrent() - LastRecoveryBlockLog >= 30)
+   {
+      LastRecoveryBlockLog = TimeCurrent();
+      AppendEvent("RECOVERY_BLOCKED", spread, totalProfit, message);
+   }
 }
 
 bool TrendAllowsRecovery(ENUM_POSITION_TYPE recoveryType, int spread, double totalProfit)
@@ -603,13 +696,7 @@ bool TrendAllowsRecovery(ENUM_POSITION_TYPE recoveryType, int spread, double tot
    string side = recoveryType == POSITION_TYPE_SELL ? "SELL" : "BUY";
    string message = "Recovery " + side + " blocked by trend filter. Holding basket.";
    SetStatus(message);
-
-   if(LastRecoveryBlockLog == 0 || TimeCurrent() - LastRecoveryBlockLog >= 30)
-   {
-      LastRecoveryBlockLog = TimeCurrent();
-      AppendEvent("RECOVERY_BLOCKED_TREND", spread, totalProfit,
-                  message + " ma_delta=" + DoubleToString(CachedMaDeltaPoints, 1));
-   }
+   LogRecoveryBlock(spread, totalProfit, message + " ma_delta=" + DoubleToString(CachedMaDeltaPoints, 1));
 
    return false;
 }
@@ -1132,8 +1219,11 @@ void ReadDashboardControl(bool forceRead)
    DashboardZoneHeight = 0;
    DashboardMultiplier = 0.0;
    DashboardTargetUSD = 0.0;
-   DashboardQuickTargetUSD = 0.0;
-   DashboardMaxLossUSD = 0.0;
+   DashboardQuickTargetUSD = -1.0;
+   DashboardMaxLossUSD = -1.0;
+   DashboardMaxLot = -1.0;
+   DashboardMaxSameSide = -1;
+   DashboardMinSameSideDistance = -1;
    DashboardMaxTurns = 0;
    DashboardMaxSpread = 0;
 
@@ -1164,6 +1254,12 @@ void ReadDashboardControl(bool forceRead)
          DashboardQuickTargetUSD = StringToDouble(value);
       else if(key == "max_loss_usd")
          DashboardMaxLossUSD = StringToDouble(value);
+      else if(key == "max_lot")
+         DashboardMaxLot = StringToDouble(value);
+      else if(key == "max_same_side")
+         DashboardMaxSameSide = (int)StringToInteger(value);
+      else if(key == "min_same_side_distance")
+         DashboardMinSameSideDistance = (int)StringToInteger(value);
       else if(key == "max_turns")
          DashboardMaxTurns = (int)StringToInteger(value);
       else if(key == "max_spread")
@@ -1208,6 +1304,9 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "total_profit=" + DoubleToString(totalProfit, 2) + "\n");
    FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
    FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
+   FileWriteString(handle, "max_lot=" + DoubleToString(ActiveMaxLot(), 2) + "\n");
+   FileWriteString(handle, "max_same_side=" + IntegerToString(ActiveMaxSameSidePositions()) + "\n");
+   FileWriteString(handle, "min_same_side_distance=" + IntegerToString(ActiveMinSameSideDistancePoints()) + "\n");
    FileWriteString(handle, "upper_level=" + DoubleToString(UpperLevel, _Digits) + "\n");
    FileWriteString(handle, "lower_level=" + DoubleToString(LowerLevel, _Digits) + "\n");
    FileWriteString(handle, "cycle_id=" + CycleId + "\n");
@@ -1245,6 +1344,9 @@ void AcknowledgeCloseAllCommand()
    FileWriteString(handle, "target_usd=" + DoubleToString(ActiveTargetUSD(), 2) + "\n");
    FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
    FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
+   FileWriteString(handle, "max_lot=" + DoubleToString(ActiveMaxLot(), 2) + "\n");
+   FileWriteString(handle, "max_same_side=" + IntegerToString(ActiveMaxSameSidePositions()) + "\n");
+   FileWriteString(handle, "min_same_side_distance=" + IntegerToString(ActiveMinSameSideDistancePoints()) + "\n");
    FileWriteString(handle, "max_turns=" + IntegerToString(ActiveMaxTurns()) + "\n");
    FileWriteString(handle, "max_spread=" + IntegerToString(ActiveMaxSpread()) + "\n");
    FileWriteString(handle, "updated_by=mt5\n");
@@ -1288,12 +1390,27 @@ double ActiveTargetUSD()
 
 double ActiveQuickTargetUSD()
 {
-   return(DashboardQuickTargetUSD > 0.0 ? DashboardQuickTargetUSD : InpQuickBasketProfitUSD);
+   return(DashboardQuickTargetUSD >= 0.0 ? DashboardQuickTargetUSD : InpQuickBasketProfitUSD);
 }
 
 double ActiveMaxFloatingLossUSD()
 {
-   return(DashboardMaxLossUSD > 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD);
+   return(DashboardMaxLossUSD >= 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD);
+}
+
+double ActiveMaxLot()
+{
+   return(DashboardMaxLot >= 0.0 ? DashboardMaxLot : InpMaxRecoveryLot);
+}
+
+int ActiveMaxSameSidePositions()
+{
+   return(DashboardMaxSameSide >= 0 ? DashboardMaxSameSide : InpMaxSameSidePositions);
+}
+
+int ActiveMinSameSideDistancePoints()
+{
+   return(DashboardMinSameSideDistance >= 0 ? DashboardMinSameSideDistance : InpMinSameSideDistancePoints);
 }
 
 int ActiveMaxTurns()
@@ -1403,6 +1520,7 @@ void DrawDashboard(int spread) {
            "Status: ", status, "\n",
            "Dashboard: ", dashboard, "\n",
            "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2), "\n",
+           "Max Lot: ", DoubleToString(ActiveMaxLot(), 2), " | Same Side Max: ", ActiveMaxSameSidePositions(), "\n",
            "AI Filter: ", modelStatus, " | Score: ", DoubleToString(LastModelScore, 3), "\n",
            "EA Message: ", LastStatus, "\n",
            "Turns: ", CurrentTurns);
