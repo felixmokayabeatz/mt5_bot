@@ -1,7 +1,6 @@
 import csv
 import math
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,12 +20,15 @@ FEATURES = [
 
 MIN_ROWS = 30
 MIN_CLASS_ROWS = 5
+VALIDATION_MIN_ROWS = 10
+VALIDATION_FRACTION = 0.25
 TRAINING_STEPS = 2500
 LEARNING_RATE = 0.05
 L2 = 0.001
+DEFAULT_THRESHOLD = 0.55
 
 
-def env_float(name, default):
+def env_float(name, default=None):
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -36,7 +38,11 @@ def env_float(name, default):
         return default
 
 
-THRESHOLD = env_float("MODEL_THRESHOLD", 0.55)
+THRESHOLD_OVERRIDE = env_float("MODEL_THRESHOLD")
+
+
+def clamp_threshold(value):
+    return min(max(value, 0.01), 0.99)
 
 
 def common_files_dir():
@@ -62,7 +68,7 @@ def model_path():
 def parse_float(row, key, default=0.0):
     try:
         return float(str(row.get(key, "")).strip())
-    except ValueError:
+    except (TypeError, ValueError):
         return default
 
 
@@ -90,13 +96,42 @@ def load_rows(path):
     return rows
 
 
-def write_model(enabled, reason, rows, weights=None, bias=0.0, mean=None, scale=None):
+def active_threshold():
+    if THRESHOLD_OVERRIDE is not None:
+        return clamp_threshold(THRESHOLD_OVERRIDE)
+
+    return DEFAULT_THRESHOLD
+
+
+def safe_write_text(target, text):
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+
+    try:
+        os.replace(tmp, target)
+    except OSError:
+        target.write_text(text, encoding="utf-8")
+
+
+def write_model(
+    enabled,
+    reason,
+    rows,
+    weights=None,
+    bias=0.0,
+    mean=None,
+    scale=None,
+    threshold=None,
+    metadata=None,
+):
     target = model_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
     weights = weights or [0.0 for _ in FEATURES]
     mean = mean or [0.0 for _ in FEATURES]
     scale = scale or [1.0 for _ in FEATURES]
+    threshold = active_threshold() if threshold is None else threshold
+    metadata = metadata or {}
     wins = sum(1 for row in rows if row["label"] == 1)
     losses = len(rows) - wins
 
@@ -107,7 +142,7 @@ def write_model(enabled, reason, rows, weights=None, bias=0.0, mean=None, scale=
         "trained_rows": str(len(rows)),
         "wins": str(wins),
         "losses": str(losses),
-        "threshold": f"{THRESHOLD:.6f}",
+        "threshold": f"{threshold:.6f}",
         "features": ",".join(FEATURES),
         "mean": ",".join(f"{value:.10f}" for value in mean),
         "scale": ",".join(f"{value:.10f}" for value in scale),
@@ -115,10 +150,10 @@ def write_model(enabled, reason, rows, weights=None, bias=0.0, mean=None, scale=
         "bias": f"{bias:.10f}",
     }
 
-    target.write_text(
-        "\n".join(f"{key}={value}" for key, value in lines.items()) + "\n",
-        encoding="utf-8",
-    )
+    for key, value in metadata.items():
+        lines[key] = str(value)
+
+    safe_write_text(target, "\n".join(f"{key}={value}" for key, value in lines.items()) + "\n")
     return target
 
 
@@ -152,32 +187,203 @@ def sigmoid(value):
     return 1.0 / (1.0 + math.exp(-value))
 
 
+def median(values):
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
+
+
+def build_sample_weights(rows):
+    wins = max(sum(1 for row in rows if row["label"] == 1), 1)
+    losses = max(len(rows) - wins, 1)
+    abs_profits = [abs(row["profit"]) for row in rows if abs(row["profit"]) > 0.0]
+    median_abs_profit = max(median(abs_profits), 0.01)
+    weights = []
+
+    for row in rows:
+        class_count = wins if row["label"] == 1 else losses
+        class_weight = len(rows) / (2.0 * class_count)
+        profit_weight = 1.0 + min(abs(row["profit"]) / median_abs_profit, 2.0)
+        weights.append(class_weight * profit_weight)
+
+    return weights
+
+
 def train(rows):
     x_values, mean, scale = normalize(rows)
     y_values = [row["label"] for row in rows]
+    sample_weights = build_sample_weights(rows)
     weights = [0.0 for _ in FEATURES]
     bias = 0.0
-    sample_count = len(rows)
+    total_weight = sum(sample_weights) or 1.0
 
     for _ in range(TRAINING_STEPS):
         grad_weights = [0.0 for _ in FEATURES]
         grad_bias = 0.0
 
-        for features, label in zip(x_values, y_values):
+        for features, label, sample_weight in zip(x_values, y_values, sample_weights):
             prediction = sigmoid(sum(w * x for w, x in zip(weights, features)) + bias)
-            error = prediction - label
+            error = (prediction - label) * sample_weight
             grad_bias += error
 
             for index, value in enumerate(features):
                 grad_weights[index] += error * value
 
-        bias -= LEARNING_RATE * grad_bias / sample_count
+        bias -= LEARNING_RATE * grad_bias / total_weight
 
         for index in range(len(weights)):
-            gradient = (grad_weights[index] / sample_count) + (L2 * weights[index])
+            gradient = (grad_weights[index] / total_weight) + (L2 * weights[index])
             weights[index] -= LEARNING_RATE * gradient
 
     return weights, bias, mean, scale
+
+
+def score_features(features, weights, bias, mean, scale):
+    z_value = bias
+
+    for index, value in enumerate(features):
+        feature_scale = scale[index] if scale[index] > 1e-9 else 1.0
+        z_value += weights[index] * ((value - mean[index]) / feature_scale)
+
+    return sigmoid(z_value)
+
+
+def evaluate_rows(rows, weights, bias, mean, scale, threshold):
+    if not rows:
+        return {
+            "rows": 0,
+            "selected": 0,
+            "coverage": 0.0,
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "win_rate": 0.0,
+            "avg_profit": 0.0,
+            "total_profit": 0.0,
+        }
+
+    scores = [score_features(row["features"], weights, bias, mean, scale) for row in rows]
+    selected = [row for row, score in zip(rows, scores) if score >= threshold]
+    selected_wins = sum(1 for row in selected if row["label"] == 1)
+    selected_losses = len(selected) - selected_wins
+    rejected_wins = sum(
+        1 for row, score in zip(rows, scores) if score < threshold and row["label"] == 1
+    )
+    rejected_losses = sum(
+        1 for row, score in zip(rows, scores) if score < threshold and row["label"] == 0
+    )
+    precision = selected_wins / len(selected) if selected else 0.0
+    total_wins = selected_wins + rejected_wins
+    recall = selected_wins / total_wins if total_wins else 0.0
+    f1 = (2.0 * precision * recall / (precision + recall)) if precision + recall else 0.0
+    accuracy = (selected_wins + rejected_losses) / len(rows)
+    total_profit = sum(row["profit"] for row in selected)
+    avg_profit = total_profit / len(selected) if selected else 0.0
+
+    return {
+        "rows": len(rows),
+        "selected": len(selected),
+        "coverage": len(selected) / len(rows),
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "win_rate": selected_wins / len(selected) if selected else 0.0,
+        "avg_profit": avg_profit,
+        "total_profit": total_profit,
+        "selected_losses": selected_losses,
+    }
+
+
+def can_train(rows):
+    wins = sum(1 for row in rows if row["label"] == 1)
+    losses = len(rows) - wins
+    return len(rows) >= MIN_ROWS and wins >= MIN_CLASS_ROWS and losses >= MIN_CLASS_ROWS
+
+
+def validation_split(rows):
+    if len(rows) < MIN_ROWS + VALIDATION_MIN_ROWS:
+        return None, None
+
+    validation_count = max(VALIDATION_MIN_ROWS, int(len(rows) * VALIDATION_FRACTION))
+    training_rows = rows[:-validation_count]
+    validation_rows = rows[-validation_count:]
+
+    if not can_train(training_rows):
+        return None, None
+
+    return training_rows, validation_rows
+
+
+def choose_threshold(rows):
+    if THRESHOLD_OVERRIDE is not None:
+        return active_threshold(), {
+            "threshold_source": "env",
+            "validation_rows": "0",
+            "validation_selected": "0",
+            "validation_f1": "0.0000",
+            "validation_avg_profit": "0.00",
+            "validation_total_profit": "0.00",
+        }
+
+    training_rows, validation_rows = validation_split(rows)
+    if not training_rows:
+        return DEFAULT_THRESHOLD, {
+            "threshold_source": "default",
+            "validation_rows": "0",
+            "validation_selected": "0",
+            "validation_f1": "0.0000",
+            "validation_avg_profit": "0.00",
+            "validation_total_profit": "0.00",
+        }
+
+    weights, bias, mean, scale = train(training_rows)
+    best_threshold = DEFAULT_THRESHOLD
+    best_stats = None
+    best_objective = None
+    minimum_selected = max(2, len(validation_rows) // 5)
+
+    for point in range(35, 86):
+        threshold = point / 100.0
+        stats = evaluate_rows(validation_rows, weights, bias, mean, scale, threshold)
+        if stats["selected"] < minimum_selected:
+            continue
+
+        objective = (stats["avg_profit"] * math.sqrt(stats["selected"])) + stats["f1"]
+        if best_objective is None or objective > best_objective:
+            best_objective = objective
+            best_threshold = threshold
+            best_stats = stats
+
+    if best_stats is None:
+        return DEFAULT_THRESHOLD, {
+            "threshold_source": "default",
+            "validation_rows": str(len(validation_rows)),
+            "validation_selected": "0",
+            "validation_f1": "0.0000",
+            "validation_avg_profit": "0.00",
+            "validation_total_profit": "0.00",
+        }
+
+    return best_threshold, {
+        "threshold_source": "validation",
+        "validation_rows": str(best_stats["rows"]),
+        "validation_selected": str(best_stats["selected"]),
+        "validation_f1": f"{best_stats['f1']:.4f}",
+        "validation_accuracy": f"{best_stats['accuracy']:.4f}",
+        "validation_precision": f"{best_stats['precision']:.4f}",
+        "validation_recall": f"{best_stats['recall']:.4f}",
+        "validation_win_rate": f"{best_stats['win_rate']:.4f}",
+        "validation_avg_profit": f"{best_stats['avg_profit']:.2f}",
+        "validation_total_profit": f"{best_stats['total_profit']:.2f}",
+    }
 
 
 def main():
@@ -203,8 +409,49 @@ def main():
         print(f"[trainer] wrote recording-only model: {target}", flush=True)
         return 0
 
+    threshold, metadata = choose_threshold(rows)
     weights, bias, mean, scale = train(rows)
-    target = write_model(True, "Logistic model trained from demo cycle outcomes.", rows, weights, bias, mean, scale)
+    training_stats = evaluate_rows(rows, weights, bias, mean, scale, threshold)
+    metadata.update(
+        {
+            "training_selected": str(training_stats["selected"]),
+            "training_coverage": f"{training_stats['coverage']:.4f}",
+            "training_accuracy": f"{training_stats['accuracy']:.4f}",
+            "training_precision": f"{training_stats['precision']:.4f}",
+            "training_recall": f"{training_stats['recall']:.4f}",
+            "training_f1": f"{training_stats['f1']:.4f}",
+            "training_avg_profit": f"{training_stats['avg_profit']:.2f}",
+            "training_total_profit": f"{training_stats['total_profit']:.2f}",
+        }
+    )
+
+    target = write_model(
+        True,
+        "Profit-weighted logistic model trained from closed cycle outcomes.",
+        rows,
+        weights,
+        bias,
+        mean,
+        scale,
+        threshold,
+        metadata,
+    )
+    print(
+        "[trainer] threshold="
+        f"{threshold:.2f} source={metadata.get('threshold_source', 'default')} "
+        f"training_f1={metadata['training_f1']} "
+        f"training_total_profit={metadata['training_total_profit']}",
+        flush=True,
+    )
+    if metadata.get("validation_rows") != "0":
+        print(
+            "[trainer] validation "
+            f"rows={metadata['validation_rows']} "
+            f"selected={metadata['validation_selected']} "
+            f"f1={metadata['validation_f1']} "
+            f"avg_profit={metadata['validation_avg_profit']}",
+            flush=True,
+        )
     print(f"[trainer] model enabled and written: {target}", flush=True)
     return 0
 

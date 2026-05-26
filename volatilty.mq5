@@ -34,6 +34,11 @@ input bool   InpUseAiFilter         = true;
 input string InpModelFile           = "recovery_shield_model.txt";
 input double InpDefaultModelThreshold = 0.55;
 
+input group "Performance"
+input int    InpControlPollSeconds  = 1;        // Read dashboard commands at most once per N seconds
+input int    InpStatusWriteSeconds  = 2;        // Write dashboard status at most once per N seconds
+input int    InpTradeDeviationPoints = 20;      // Max price deviation used by CTrade
+
 //--- Global Variables
 CTrade         trade;
 CPositionInfo  m_position;
@@ -51,6 +56,8 @@ double         DashboardTargetUSD = 0.0;
 int            DashboardMaxTurns = 0;
 int            DashboardMaxSpread = 0;
 datetime       LastStatusWrite = 0;
+datetime       LastControlRead = 0;
+datetime       LastDashboardDraw = 0;
 string         LastEventSource = "init";
 string         CycleId = "";
 datetime       CycleStartedAt = 0;
@@ -73,12 +80,26 @@ double         LastModelScore = 0.0;
 string         ModelReason = "No model loaded yet.";
 datetime       LastModelRead = 0;
 datetime       LastModelBlockLog = 0;
+int            AtrHandle = INVALID_HANDLE;
+int            FastMaHandle = INVALID_HANDLE;
+int            SlowMaHandle = INVALID_HANDLE;
+int            RsiHandle = INVALID_HANDLE;
+bool           FeatureCacheReady = false;
+datetime       FeatureCacheBarTime = 0;
+double         CachedAtrPoints = 0.0;
+double         CachedRangePoints = 0.0;
+double         CachedMaDeltaPoints = 0.0;
+double         CachedRsi14 = 50.0;
 
 int OnInit() {
    trade.SetExpertMagicNumber(InpMagic);
-   trade.SetDeviationInPoints(20);
+   trade.SetDeviationInPoints(InpTradeDeviationPoints);
+   AtrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
+   FastMaHandle = iMA(_Symbol, PERIOD_CURRENT, 10, 0, MODE_SMA, PRICE_CLOSE);
+   SlowMaHandle = iMA(_Symbol, PERIOD_CURRENT, 30, 0, MODE_SMA, PRICE_CLOSE);
+   RsiHandle = iRSI(_Symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
    InitializeModelDefaults();
-   ReadDashboardControl();
+   ReadDashboardControl(true);
    ReadAiModel(true);
    EventSetTimer(1);
    SetStatus("EA initialized on " + _Symbol + ". Waiting for dashboard command.");
@@ -92,6 +113,10 @@ int OnInit() {
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   ReleaseIndicator(AtrHandle);
+   ReleaseIndicator(FastMaHandle);
+   ReleaseIndicator(SlowMaHandle);
+   ReleaseIndicator(RsiHandle);
    Comment("");
 }
 
@@ -112,7 +137,7 @@ void RunEngine(string eventSource)
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
 
-   ReadDashboardControl();
+   ReadDashboardControl(false);
    ReadAiModel(false);
 
    // 1. DASHBOARD
@@ -122,7 +147,7 @@ void RunEngine(string eventSource)
    {
       SetStatus("Trading blocked by terminal, EA settings, account, or symbol mode.");
       DrawDashboard(spread);
-      WriteDashboardStatus(spread, false, 0.0);
+      WriteDashboardStatus(spread, false, 0.0, true);
       return;
    }
 
@@ -159,7 +184,7 @@ void RunEngine(string eventSource)
       }
 
       AcknowledgeCloseAllCommand();
-      WriteDashboardStatus(spread, false, 0.0);
+      WriteDashboardStatus(spread, false, 0.0, true);
       return;
    }
 
@@ -172,7 +197,7 @@ void RunEngine(string eventSource)
          FinishCycle(timeOut ? "timeout" : "target", spread, totalProfit);
          CloseAll();
          ResetEA();
-         WriteDashboardStatus(spread, false, 0.0);
+         WriteDashboardStatus(spread, false, 0.0, true);
          return;
       }
    }
@@ -226,7 +251,7 @@ void RunEngine(string eventSource)
       {
          LogTradeFailure("Initial BUY");
       }
-      WriteDashboardStatus(spread, HasManagedPosition(), CurrentManagedProfit());
+      WriteDashboardStatus(spread, HasManagedPosition(), CurrentManagedProfit(), true);
       return;
    }
 
@@ -287,6 +312,15 @@ void CloseAll() {
          if(!trade.PositionClose(m_position.Ticket()) || !TradeSucceeded())
             LogTradeFailure("Close position");
       }
+   }
+}
+
+void ReleaseIndicator(int &handle)
+{
+   if(handle != INVALID_HANDLE)
+   {
+      IndicatorRelease(handle);
+      handle = INVALID_HANDLE;
    }
 }
 
@@ -487,17 +521,85 @@ void GetFeatureVector(double &features[], int spread)
 {
    MqlDateTime now;
    TimeToStruct(TimeCurrent(), now);
+   RefreshFeatureCache(false);
 
    features[0] = (double)spread;
    features[1] = (double)now.hour;
    features[2] = (double)now.day_of_week;
-   features[3] = CalculateAtrPoints(14);
-   features[4] = LastClosedRangePoints();
-   features[5] = CalculateMaDeltaPoints(10, 30);
-   features[6] = CalculateRsi(14);
+   features[3] = CachedAtrPoints;
+   features[4] = CachedRangePoints;
+   features[5] = CachedMaDeltaPoints;
+   features[6] = CachedRsi14;
    features[7] = (double)ActiveZoneHeight();
    features[8] = ActiveMultiplier();
    features[9] = (double)ActiveMaxTurns();
+}
+
+void RefreshFeatureCache(bool forceRefresh)
+{
+   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+
+   if(!forceRefresh && FeatureCacheReady && currentBarTime == FeatureCacheBarTime)
+      return;
+
+   FeatureCacheBarTime = currentBarTime;
+   CachedAtrPoints = IndicatorAtrPoints();
+   CachedRangePoints = LastClosedRangePoints();
+   CachedMaDeltaPoints = IndicatorMaDeltaPoints();
+   CachedRsi14 = IndicatorRsi();
+   FeatureCacheReady = true;
+}
+
+bool CopyClosedBufferValue(int handle, double &value)
+{
+   if(handle == INVALID_HANDLE)
+      return false;
+
+   double buffer[];
+   ArraySetAsSeries(buffer, true);
+   ResetLastError();
+
+   int copied = CopyBuffer(handle, 0, 1, 1, buffer);
+   if(copied != 1)
+      return false;
+
+   value = buffer[0];
+   return true;
+}
+
+double IndicatorAtrPoints()
+{
+   double atr = 0.0;
+
+   if(CopyClosedBufferValue(AtrHandle, atr) && atr > 0.0 && _Point > 0.0)
+      return atr / _Point;
+
+   return CalculateAtrPoints(14);
+}
+
+double IndicatorMaDeltaPoints()
+{
+   double fastMa = 0.0;
+   double slowMa = 0.0;
+
+   if(CopyClosedBufferValue(FastMaHandle, fastMa) &&
+      CopyClosedBufferValue(SlowMaHandle, slowMa) &&
+      fastMa > 0.0 &&
+      slowMa > 0.0 &&
+      _Point > 0.0)
+      return (fastMa - slowMa) / _Point;
+
+   return CalculateMaDeltaPoints(10, 30);
+}
+
+double IndicatorRsi()
+{
+   double rsi = 50.0;
+
+   if(CopyClosedBufferValue(RsiHandle, rsi) && rsi >= 0.0 && rsi <= 100.0)
+      return rsi;
+
+   return CalculateRsi(14);
 }
 
 double LastClosedRangePoints()
@@ -745,7 +847,7 @@ void WriteCycleRow(string exitReason, int durationSeconds, int exitSpread, doubl
    FileClose(handle);
 }
 
-void ReadDashboardControl()
+void ReadDashboardControl(bool forceRead)
 {
    if(!InpUseDashboardControl)
    {
@@ -753,6 +855,15 @@ void ReadDashboardControl()
       DashboardCloseAll = false;
       return;
    }
+
+   int pollSeconds = InpControlPollSeconds;
+   if(pollSeconds < 1)
+      pollSeconds = 1;
+
+   if(!forceRead && LastControlRead != 0 && TimeCurrent() - LastControlRead < pollSeconds)
+      return;
+
+   LastControlRead = TimeCurrent();
 
    int handle = FileOpen(InpControlFile,
                          FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -805,12 +916,16 @@ void ReadDashboardControl()
    FileClose(handle);
 }
 
-void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit)
+void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool forceWrite=false)
 {
    if(!InpUseDashboardControl)
       return;
 
-   if(LastStatusWrite != 0 && TimeCurrent() - LastStatusWrite < 2)
+   int writeSeconds = InpStatusWriteSeconds;
+   if(writeSeconds < 1)
+      writeSeconds = 1;
+
+   if(!forceWrite && LastStatusWrite != 0 && TimeCurrent() - LastStatusWrite < writeSeconds)
       return;
 
    LastStatusWrite = TimeCurrent();
@@ -998,6 +1113,11 @@ void SetStatus(string status)
 }
 
 void DrawDashboard(int spread) {
+   if(LastDashboardDraw != 0 && TimeCurrent() - LastDashboardDraw < 1)
+      return;
+
+   LastDashboardDraw = TimeCurrent();
+
    string status = (spread <= ActiveMaxSpread()) ? "SAFE" : "TOXIC SPREAD";
    string dashboard = InpUseDashboardControl ? (DashboardEnabled ? "RUNNING" : "PAUSED") : "LOCAL INPUTS";
    string modelStatus = InpUseAiFilter ? (ModelGateEnabled ? "ACTIVE" : "RECORDING") : "OFF";

@@ -1,5 +1,5 @@
 import os
-from tempfile import TemporaryDirectory
+from pathlib import Path
 
 from django.test import SimpleTestCase
 
@@ -23,13 +23,13 @@ class ServiceTests(SimpleTestCase):
         self.assertEqual(cleaned["max_turns"], "4")
 
     def test_common_files_dir_uses_override(self):
-        with TemporaryDirectory() as temp_dir:
-            previous = os.environ.get("MT5_COMMON_FILES_DIR")
-            os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
-            try:
-                self.assertEqual(str(common_files_dir()), temp_dir)
-            finally:
-                if previous is None:
-                    os.environ.pop("MT5_COMMON_FILES_DIR", None)
-                else:
-                    os.environ["MT5_COMMON_FILES_DIR"] = previous
+        temp_dir = str(Path.cwd() / ".tmp" / "common-files-override")
+        previous = os.environ.get("MT5_COMMON_FILES_DIR")
+        os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
+        try:
+            self.assertEqual(str(common_files_dir()), temp_dir)
+        finally:
+            if previous is None:
+                os.environ.pop("MT5_COMMON_FILES_DIR", None)
+            else:
+                os.environ["MT5_COMMON_FILES_DIR"] = previous

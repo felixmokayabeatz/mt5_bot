@@ -9,6 +9,7 @@ STATUS_FILE_NAME = "recovery_shield_status.txt"
 EVENT_LOG_FILE_NAME = "recovery_shield_events.csv"
 CYCLE_LOG_FILE_NAME = "recovery_shield_cycles.csv"
 MODEL_FILE_NAME = "recovery_shield_model.txt"
+_ROW_COUNT_CACHE = {}
 
 DEFAULT_CONTROL = {
     "enabled": "0",
@@ -34,7 +35,7 @@ def env_flag(name, default=False):
 
 
 def debug_log(message):
-    if not env_flag("DASHBOARD_DEBUG", True):
+    if not env_flag("DASHBOARD_DEBUG", False):
         return
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[dashboard {timestamp}] {message}", flush=True)
@@ -90,12 +91,29 @@ def read_key_values(path):
         return values
 
     debug_log(f"read file: {path}")
-    for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        debug_log(f"read failed: {path} {exc}")
+        return values
+
+    for raw_line in text.splitlines():
         if "=" not in raw_line:
             continue
         key, value = raw_line.split("=", 1)
         values[key.strip()] = value.strip()
     return values
+
+
+def safe_write_text(target, text):
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+
+    try:
+        os.replace(tmp, target)
+    except OSError as exc:
+        debug_log(f"atomic replace failed, writing directly: {target} {exc}")
+        target.write_text(text, encoding="utf-8")
 
 
 def read_control():
@@ -117,6 +135,18 @@ def read_model():
         "losses": "0",
         "threshold": "0.55",
         "trained_at": "-",
+        "threshold_source": "default",
+        "validation_rows": "0",
+        "validation_selected": "0",
+        "validation_f1": "0.0000",
+        "validation_avg_profit": "0.00",
+        "validation_total_profit": "0.00",
+        "training_selected": "0",
+        "training_coverage": "0.0000",
+        "training_accuracy": "0.0000",
+        "training_f1": "0.0000",
+        "training_avg_profit": "0.00",
+        "training_total_profit": "0.00",
     }
     values.update(read_key_values(model_file_path()))
     return values
@@ -127,11 +157,25 @@ def csv_data_row_count(path):
         return 0
 
     try:
+        stat = path.stat()
+    except OSError:
+        return 0
+
+    cache_key = str(path)
+    cache_state = (stat.st_mtime_ns, stat.st_size)
+    cached = _ROW_COUNT_CACHE.get(cache_key)
+    if cached and cached["state"] == cache_state:
+        return cached["count"]
+
+    try:
         line_count = sum(1 for _ in path.open("r", encoding="utf-8", errors="ignore"))
     except OSError:
         return 0
 
-    return max(line_count - 1, 0)
+    count = max(line_count - 1, 0)
+    _ROW_COUNT_CACHE[cache_key] = {"state": cache_state, "count": count}
+
+    return count
 
 
 def write_control(values):
@@ -144,9 +188,7 @@ def write_control(values):
     clean["updated_by"] = "django"
 
     lines = [f"{key}={value}" for key, value in clean.items()]
-    tmp = target.with_suffix(".tmp")
-    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.replace(tmp, target)
+    safe_write_text(target, "\n".join(lines) + "\n")
     debug_log(
         "wrote control: "
         f"path={target} enabled={clean['enabled']} close_all={clean['close_all']} "
