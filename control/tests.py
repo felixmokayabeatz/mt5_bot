@@ -15,20 +15,25 @@ class ServiceTests(SimpleTestCase):
                 "multiplier": "1.8",
                 "target_usd": "1.25",
                 "quick_target_usd": "0.50",
-                "max_loss_usd": "0",
+                "max_loss_usd": "10",
+                "allow_recovery": "0",
+                "take_profit_points": "300",
+                "stop_loss_points": "900",
                 "max_lot": "0.05",
-                "max_same_side": "2",
+                "max_same_side": "1",
                 "min_same_side_distance": "300",
-                "max_turns": "4",
+                "max_turns": "1",
                 "max_spread": "350",
             }
         )
 
         self.assertEqual(cleaned["initial_lot"], "0.02")
         self.assertEqual(cleaned["quick_target_usd"], "0.5")
+        self.assertEqual(cleaned["allow_recovery"], "0")
+        self.assertEqual(cleaned["take_profit_points"], "300")
         self.assertEqual(cleaned["max_lot"], "0.05")
-        self.assertEqual(cleaned["max_same_side"], "2")
-        self.assertEqual(cleaned["max_turns"], "4")
+        self.assertEqual(cleaned["max_same_side"], "1")
+        self.assertEqual(cleaned["max_turns"], "1")
 
     def test_common_files_dir_uses_override(self):
         temp_dir = str(Path.cwd() / ".tmp" / "common-files-override")
@@ -47,8 +52,8 @@ class ServiceTests(SimpleTestCase):
         previous = os.environ.get("MT5_COMMON_FILES_DIR")
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
-            self.assertEqual(read_version()["app_version"], "v1.0.1")
-            self.assertEqual(read_version()["ea_version"], "v1.0.1_2")
+            self.assertEqual(read_version()["app_version"], "v1.0.2")
+            self.assertEqual(read_version()["ea_version"], "v1.0.2_3")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)

@@ -6,18 +6,18 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
-#define EA_APP_VERSION "v1.0.1"
-#define EA_BUILD_NUMBER 2
-#define EA_BUILD_VERSION "v1.0.1_2"
+#define EA_APP_VERSION "v1.0.2"
+#define EA_BUILD_NUMBER 3
+#define EA_BUILD_VERSION "v1.0.2_3"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
 input group "Recovery Settings"
 input double InitialLot   = 0.01;      // Starting Lot Size
 input int    ZoneHeight   = 500;       // Distance between Buy and Sell (Points)
-input double Multiplier   = 1.3;       // Recovery Multiplier (e.g. 1.3x)
+input double Multiplier   = 1.2;       // Recovery Multiplier (e.g. 1.2x)
 input double TargetUSD    = 1.0;       // Close all when Net Profit reaches this $ amount
-input int    MaxTurns     = 10;        // Max number of recovery trades
+input int    MaxTurns     = 1;         // Max number of cycle trades; 1 disables recovery by position count
 
 input group "The Shields (Safety Filters)"
 input int    InpMaxSpread    = 25;     // Block new cycles if spread > 25
@@ -27,7 +27,11 @@ input int    InpMagic        = 999999;
 input group "Aggressive Profit Capture"
 input bool   InpAggressiveMode = true;              // Close small basket profits quickly
 input double InpQuickBasketProfitUSD = 0.50;        // Fast close-all target; 0 disables
-input double InpMaxFloatingLossUSD = 0.0;           // Emergency basket loss cap; 0 disables
+input double InpMaxFloatingLossUSD = 10.0;          // Emergency basket loss cap; 0 disables
+input bool   InpAllowRecovery = false;              // Off by default to avoid stacking losses
+input bool   InpUseHardStops = true;                // Attach SL/TP to orders
+input int    InpTakeProfitPoints = 300;             // Per-position TP in points; 0 disables
+input int    InpStopLossPoints = 900;               // Per-position SL in points; 0 disables
 input bool   InpUseTrendEntry = true;               // Start in MA trend direction
 input bool   InpBlockCounterTrendRecovery = true;   // Do not add recovery trades against strong MA trend
 input int    InpTrendFilterPoints = 50;             // MA delta needed to call trend strong
@@ -70,6 +74,9 @@ double         DashboardMultiplier = 0.0;
 double         DashboardTargetUSD = 0.0;
 double         DashboardQuickTargetUSD = -1.0;
 double         DashboardMaxLossUSD = -1.0;
+int            DashboardAllowRecovery = -1;
+int            DashboardTakeProfitPoints = -1;
+int            DashboardStopLossPoints = -1;
 double         DashboardMaxLot = -1.0;
 int            DashboardMaxSameSide = -1;
 int            DashboardMinSameSideDistance = -1;
@@ -284,12 +291,15 @@ void RunEngine(string eventSource)
 
       ENUM_POSITION_TYPE entryType = InitialEntryType();
       double entryLot = NormalizeVolume(ActiveInitialLot());
+      double stopLoss = 0.0;
+      double takeProfit = 0.0;
+      BuildOrderStops(entryType, entryType == POSITION_TYPE_SELL ? bid : ask, stopLoss, takeProfit);
       bool orderSent = false;
 
       if(entryType == POSITION_TYPE_SELL)
-         orderSent = trade.Sell(entryLot, _Symbol, bid, 0, 0);
+         orderSent = trade.Sell(entryLot, _Symbol, bid, stopLoss, takeProfit);
       else
-         orderSent = trade.Buy(entryLot, _Symbol, ask, 0, 0);
+         orderSent = trade.Buy(entryLot, _Symbol, ask, stopLoss, takeProfit);
 
       if(orderSent)
       {
@@ -329,6 +339,13 @@ void RunEngine(string eventSource)
 
    if(CurrentTurns < ActiveMaxTurns())
    {
+      if(!ActiveAllowRecovery())
+      {
+         SetStatus("Recovery disabled. Waiting for TP, SL, quick target, or loss cap.");
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
       if(CanTradeNow())
       {
          if(bid <= LowerLevel && lastType == POSITION_TYPE_BUY)
@@ -340,7 +357,11 @@ void RunEngine(string eventSource)
             }
 
             double nextLot = NextRecoveryLot();
-            if(trade.Sell(nextLot, _Symbol, bid, 0, 0) && TradeSucceeded())
+            double stopLoss = 0.0;
+            double takeProfit = 0.0;
+            BuildOrderStops(POSITION_TYPE_SELL, bid, stopLoss, takeProfit);
+
+            if(trade.Sell(nextLot, _Symbol, bid, stopLoss, takeProfit) && TradeSucceeded())
             {
                CurrentTurns++;
                LastTradeTime = TimeCurrent();
@@ -362,7 +383,11 @@ void RunEngine(string eventSource)
             }
 
             double nextLot = NextRecoveryLot();
-            if(trade.Buy(nextLot, _Symbol, ask, 0, 0) && TradeSucceeded())
+            double stopLoss = 0.0;
+            double takeProfit = 0.0;
+            BuildOrderStops(POSITION_TYPE_BUY, ask, stopLoss, takeProfit);
+
+            if(trade.Buy(nextLot, _Symbol, ask, stopLoss, takeProfit) && TradeSucceeded())
             {
                CurrentTurns++;
                LastTradeTime = TimeCurrent();
@@ -550,6 +575,33 @@ void ConfigureCycleLevels(ENUM_POSITION_TYPE entryType, double entryPrice)
    {
       UpperLevel = entryPrice;
       LowerLevel = entryPrice - (ActiveZoneHeight() * _Point);
+   }
+}
+
+void BuildOrderStops(ENUM_POSITION_TYPE entryType, double entryPrice, double &stopLoss, double &takeProfit)
+{
+   stopLoss = 0.0;
+   takeProfit = 0.0;
+
+   if(!InpUseHardStops || _Point <= 0.0)
+      return;
+
+   int takeProfitPoints = ActiveTakeProfitPoints();
+   int stopLossPoints = ActiveStopLossPoints();
+
+   if(entryType == POSITION_TYPE_SELL)
+   {
+      if(stopLossPoints > 0)
+         stopLoss = NormalizeDouble(entryPrice + (stopLossPoints * _Point), _Digits);
+      if(takeProfitPoints > 0)
+         takeProfit = NormalizeDouble(entryPrice - (takeProfitPoints * _Point), _Digits);
+   }
+   else
+   {
+      if(stopLossPoints > 0)
+         stopLoss = NormalizeDouble(entryPrice - (stopLossPoints * _Point), _Digits);
+      if(takeProfitPoints > 0)
+         takeProfit = NormalizeDouble(entryPrice + (takeProfitPoints * _Point), _Digits);
    }
 }
 
@@ -1221,6 +1273,9 @@ void ReadDashboardControl(bool forceRead)
    DashboardTargetUSD = 0.0;
    DashboardQuickTargetUSD = -1.0;
    DashboardMaxLossUSD = -1.0;
+   DashboardAllowRecovery = -1;
+   DashboardTakeProfitPoints = -1;
+   DashboardStopLossPoints = -1;
    DashboardMaxLot = -1.0;
    DashboardMaxSameSide = -1;
    DashboardMinSameSideDistance = -1;
@@ -1254,6 +1309,12 @@ void ReadDashboardControl(bool forceRead)
          DashboardQuickTargetUSD = StringToDouble(value);
       else if(key == "max_loss_usd")
          DashboardMaxLossUSD = StringToDouble(value);
+      else if(key == "allow_recovery")
+         DashboardAllowRecovery = (int)StringToInteger(value);
+      else if(key == "take_profit_points")
+         DashboardTakeProfitPoints = (int)StringToInteger(value);
+      else if(key == "stop_loss_points")
+         DashboardStopLossPoints = (int)StringToInteger(value);
       else if(key == "max_lot")
          DashboardMaxLot = StringToDouble(value);
       else if(key == "max_same_side")
@@ -1304,6 +1365,9 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "total_profit=" + DoubleToString(totalProfit, 2) + "\n");
    FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
    FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
+   FileWriteString(handle, "allow_recovery=" + BoolFlag(ActiveAllowRecovery()) + "\n");
+   FileWriteString(handle, "take_profit_points=" + IntegerToString(ActiveTakeProfitPoints()) + "\n");
+   FileWriteString(handle, "stop_loss_points=" + IntegerToString(ActiveStopLossPoints()) + "\n");
    FileWriteString(handle, "max_lot=" + DoubleToString(ActiveMaxLot(), 2) + "\n");
    FileWriteString(handle, "max_same_side=" + IntegerToString(ActiveMaxSameSidePositions()) + "\n");
    FileWriteString(handle, "min_same_side_distance=" + IntegerToString(ActiveMinSameSideDistancePoints()) + "\n");
@@ -1344,6 +1408,9 @@ void AcknowledgeCloseAllCommand()
    FileWriteString(handle, "target_usd=" + DoubleToString(ActiveTargetUSD(), 2) + "\n");
    FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
    FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
+   FileWriteString(handle, "allow_recovery=" + BoolFlag(ActiveAllowRecovery()) + "\n");
+   FileWriteString(handle, "take_profit_points=" + IntegerToString(ActiveTakeProfitPoints()) + "\n");
+   FileWriteString(handle, "stop_loss_points=" + IntegerToString(ActiveStopLossPoints()) + "\n");
    FileWriteString(handle, "max_lot=" + DoubleToString(ActiveMaxLot(), 2) + "\n");
    FileWriteString(handle, "max_same_side=" + IntegerToString(ActiveMaxSameSidePositions()) + "\n");
    FileWriteString(handle, "min_same_side_distance=" + IntegerToString(ActiveMinSameSideDistancePoints()) + "\n");
@@ -1395,7 +1462,22 @@ double ActiveQuickTargetUSD()
 
 double ActiveMaxFloatingLossUSD()
 {
-   return(DashboardMaxLossUSD >= 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD);
+   return(DashboardMaxLossUSD > 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD);
+}
+
+bool ActiveAllowRecovery()
+{
+   return(DashboardAllowRecovery >= 0 ? DashboardAllowRecovery == 1 : InpAllowRecovery);
+}
+
+int ActiveTakeProfitPoints()
+{
+   return(DashboardTakeProfitPoints >= 0 ? DashboardTakeProfitPoints : InpTakeProfitPoints);
+}
+
+int ActiveStopLossPoints()
+{
+   return(DashboardStopLossPoints >= 0 ? DashboardStopLossPoints : InpStopLossPoints);
 }
 
 double ActiveMaxLot()
@@ -1520,6 +1602,7 @@ void DrawDashboard(int spread) {
            "Status: ", status, "\n",
            "Dashboard: ", dashboard, "\n",
            "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2), "\n",
+           "Recovery: ", ActiveAllowRecovery() ? "ON" : "OFF", " | TP/SL: ", ActiveTakeProfitPoints(), "/", ActiveStopLossPoints(), "\n",
            "Max Lot: ", DoubleToString(ActiveMaxLot(), 2), " | Same Side Max: ", ActiveMaxSameSidePositions(), "\n",
            "AI Filter: ", modelStatus, " | Score: ", DoubleToString(LastModelScore, 3), "\n",
            "EA Message: ", LastStatus, "\n",
