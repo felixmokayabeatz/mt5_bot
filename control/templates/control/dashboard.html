@@ -20,6 +20,10 @@
       </div>
     </header>
 
+    <section class="version-alert" id="version-alert" hidden>
+      Compiled EA is <strong id="compiled-alert-version">{{ version.ea_version|default:"v1.0.1_2" }}</strong>, but the running EA is <strong id="running-alert-version">unknown</strong>. Reattach the EA or restart MT5.
+    </section>
+
     {% if messages %}
       <section class="messages">
         {% for message in messages %}
@@ -279,6 +283,13 @@
         document.getElementById("ea-version").textContent = status.ea_version || version.ea_version || "v1.0.1_2";
         document.getElementById("live-ea-version").textContent = status.ea_version || "Waiting for EA";
         document.getElementById("compiled-version").textContent = version.ea_version || "v1.0.1_2";
+        const compiledVersion = version.ea_version || "v1.0.1_2";
+        const runningVersion = status.ea_version || "unknown / old EA";
+        const versionAlert = document.getElementById("version-alert");
+        const versionMismatch = runningVersion !== compiledVersion;
+        versionAlert.hidden = !versionMismatch;
+        document.getElementById("compiled-alert-version").textContent = compiledVersion;
+        document.getElementById("running-alert-version").textContent = runningVersion;
         document.getElementById("symbol").textContent = status.symbol || "-";
         document.getElementById("spread").textContent = status.spread || "-";
         document.getElementById("turns").textContent = status.turns || "0";
