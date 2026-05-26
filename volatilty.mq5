@@ -6,6 +6,9 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
+#define EA_APP_VERSION "v1.0.0"
+#define EA_BUILD_NUMBER 1
+#define EA_BUILD_VERSION "v1.0.0_1"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
@@ -20,6 +23,15 @@ input group "The Shields (Safety Filters)"
 input int    InpMaxSpread    = 25;     // Block new cycles if spread > 25
 input int    InpMaxCycleTime = 3600;   // Kill the whole cycle if stuck for 1hr (Seconds)
 input int    InpMagic        = 999999;
+
+input group "Aggressive Profit Capture"
+input bool   InpAggressiveMode = true;              // Close small basket profits quickly
+input double InpQuickBasketProfitUSD = 0.50;        // Fast close-all target; 0 disables
+input double InpMaxFloatingLossUSD = 0.0;           // Emergency basket loss cap; 0 disables
+input bool   InpUseTrendEntry = true;               // Start in MA trend direction
+input bool   InpBlockCounterTrendRecovery = true;   // Do not add recovery trades against strong MA trend
+input int    InpTrendFilterPoints = 50;             // MA delta needed to call trend strong
+input int    InpMinSecondsBetweenTrades = 2;        // Trade throttle to prevent duplicate entries
 
 input group "Django Dashboard Control"
 input bool   InpUseDashboardControl = true;
@@ -53,11 +65,15 @@ double         DashboardInitialLot = 0.0;
 int            DashboardZoneHeight = 0;
 double         DashboardMultiplier = 0.0;
 double         DashboardTargetUSD = 0.0;
+double         DashboardQuickTargetUSD = 0.0;
+double         DashboardMaxLossUSD = 0.0;
 int            DashboardMaxTurns = 0;
 int            DashboardMaxSpread = 0;
 datetime       LastStatusWrite = 0;
 datetime       LastControlRead = 0;
 datetime       LastDashboardDraw = 0;
+datetime       LastTradeTime = 0;
+datetime       LastRecoveryBlockLog = 0;
 string         LastEventSource = "init";
 string         CycleId = "";
 datetime       CycleStartedAt = 0;
@@ -102,8 +118,8 @@ int OnInit() {
    ReadDashboardControl(true);
    ReadAiModel(true);
    EventSetTimer(1);
-   SetStatus("EA initialized on " + _Symbol + ". Waiting for dashboard command.");
-   AppendEvent("EA_INIT", 0, 0.0, "initialized");
+   SetStatus("EA " + EA_BUILD_VERSION + " initialized on " + _Symbol + ". Waiting for dashboard command.");
+   AppendEvent("EA_INIT", 0, 0.0, "initialized version=" + EA_BUILD_VERSION);
    Comment("--- RECOVERY SHIELD ---\n",
            "Status: ", LastStatus, "\n",
            "If no trade opens, check the Experts tab.");
@@ -153,18 +169,27 @@ void RunEngine(string eventSource)
 
    // 2. CHECK POSITIONS & PROFIT
    bool hasPosition = false;
+   int positionCount = 0;
    double totalProfit = 0;
    ENUM_POSITION_TYPE lastType = (ENUM_POSITION_TYPE)-1;
+   ENUM_POSITION_TYPE firstType = (ENUM_POSITION_TYPE)-1;
+   datetime firstTime = 0;
+   datetime lastTime = 0;
+   double firstOpenPrice = 0.0;
+   double lastOpenPrice = 0.0;
 
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(m_position.SelectByIndex(i) && m_position.Symbol() == _Symbol && m_position.Magic() == InpMagic)
-      {
-         hasPosition = true;
-         totalProfit += m_position.Profit() + m_position.Commission() + m_position.Swap();
-         lastType = m_position.PositionType();
-      }
-   }
+   GetManagedPositionState(
+      hasPosition,
+      positionCount,
+      totalProfit,
+      firstType,
+      firstTime,
+      firstOpenPrice,
+      lastType,
+      lastTime,
+      lastOpenPrice
+   );
+   SyncCycleFromPositions(hasPosition, positionCount, firstType, firstTime, firstOpenPrice, bid, ask, spread);
 
    if(hasPosition && CycleId != "" && totalProfit < CycleWorstProfit)
       CycleWorstProfit = totalProfit;
@@ -191,10 +216,26 @@ void RunEngine(string eventSource)
    // 3. EMERGENCY EXIT (Profit Target OR Time-Out)
    if(hasPosition) {
       bool timeOut = (TimeCurrent() - CycleStartTime >= InpMaxCycleTime);
+      bool hitQuickTarget = (InpAggressiveMode &&
+                             ActiveQuickTargetUSD() > 0.0 &&
+                             totalProfit >= ActiveQuickTargetUSD());
+      bool hitNormalTarget = (totalProfit >= ActiveTargetUSD());
+      bool hitLossCap = (ActiveMaxFloatingLossUSD() > 0.0 &&
+                         totalProfit <= -ActiveMaxFloatingLossUSD());
       
-      if(totalProfit >= ActiveTargetUSD() || timeOut) {
+      if(hitNormalTarget || hitQuickTarget || hitLossCap || timeOut) {
          if(timeOut) Print("SHIELD: Cycle timed out. Closing to prevent 24hr trap.");
-         FinishCycle(timeOut ? "timeout" : "target", spread, totalProfit);
+         if(hitLossCap) Print("SHIELD: Max floating loss hit. Closing basket.");
+
+         string exitReason = "target";
+         if(hitQuickTarget)
+            exitReason = "quick_target";
+         if(hitLossCap)
+            exitReason = "max_loss";
+         if(timeOut)
+            exitReason = "timeout";
+
+         FinishCycle(exitReason, spread, totalProfit);
          CloseAll();
          ResetEA();
          WriteDashboardStatus(spread, false, 0.0, true);
@@ -229,27 +270,44 @@ void RunEngine(string eventSource)
          return;
       }
 
+      if(!CanTradeNow())
+      {
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
+      ENUM_POSITION_TYPE entryType = InitialEntryType();
       double entryLot = NormalizeVolume(ActiveInitialLot());
-      if(trade.Buy(entryLot, _Symbol, ask, 0, 0))
+      bool orderSent = false;
+
+      if(entryType == POSITION_TYPE_SELL)
+         orderSent = trade.Sell(entryLot, _Symbol, bid, 0, 0);
+      else
+         orderSent = trade.Buy(entryLot, _Symbol, ask, 0, 0);
+
+      if(orderSent)
       {
          if(TradeSucceeded())
          {
-            UpperLevel = ask;
-            LowerLevel = ask - (ActiveZoneHeight() * _Point);
+            ConfigureCycleLevels(entryType, entryType == POSITION_TYPE_SELL ? bid : ask);
             CurrentTurns = 1;
             CycleStartTime = TimeCurrent();
+            LastTradeTime = TimeCurrent();
             StartCycle(bid, ask, spread, modelScore);
-            SetStatus("Initial BUY opened.");
-            AppendEvent("TRADE_BUY", spread, CurrentManagedProfit(), "initial_lot=" + DoubleToString(entryLot, 2));
+            SetStatus(entryType == POSITION_TYPE_SELL ? "Initial SELL opened." : "Initial BUY opened.");
+            AppendEvent(entryType == POSITION_TYPE_SELL ? "TRADE_SELL" : "TRADE_BUY",
+                        spread,
+                        CurrentManagedProfit(),
+                        "initial_lot=" + DoubleToString(entryLot, 2));
          }
          else
          {
-            LogTradeFailure("Initial BUY");
+            LogTradeFailure(entryType == POSITION_TYPE_SELL ? "Initial SELL" : "Initial BUY");
          }
       }
       else
       {
-         LogTradeFailure("Initial BUY");
+         LogTradeFailure(entryType == POSITION_TYPE_SELL ? "Initial SELL" : "Initial BUY");
       }
       WriteDashboardStatus(spread, HasManagedPosition(), CurrentManagedProfit(), true);
       return;
@@ -265,33 +323,50 @@ void RunEngine(string eventSource)
 
    if(CurrentTurns < ActiveMaxTurns())
    {
-      if(bid <= LowerLevel && lastType == POSITION_TYPE_BUY)
+      if(CanTradeNow())
       {
-         double nextLot = NormalizeVolume(ActiveInitialLot() * MathPow(ActiveMultiplier(), CurrentTurns));
-         if(trade.Sell(nextLot, _Symbol, bid, 0, 0) && TradeSucceeded())
+         if(bid <= LowerLevel && lastType == POSITION_TYPE_BUY)
          {
-            CurrentTurns++;
-            SetStatus("Recovery SELL opened.");
-            AppendEvent("TRADE_SELL", spread, totalProfit, "recovery_lot=" + DoubleToString(nextLot, 2));
+            if(!TrendAllowsRecovery(POSITION_TYPE_SELL, spread, totalProfit))
+            {
+               WriteDashboardStatus(spread, hasPosition, totalProfit);
+               return;
+            }
+
+            double nextLot = NextRecoveryLot();
+            if(trade.Sell(nextLot, _Symbol, bid, 0, 0) && TradeSucceeded())
+            {
+               CurrentTurns++;
+               LastTradeTime = TimeCurrent();
+               SetStatus("Recovery SELL opened.");
+               AppendEvent("TRADE_SELL", spread, totalProfit, "recovery_lot=" + DoubleToString(nextLot, 2));
+            }
+            else
+            {
+               LogTradeFailure("Recovery SELL");
+            }
          }
-         else
-         {
-            LogTradeFailure("Recovery SELL");
-         }
-      }
       
-      if(ask >= UpperLevel && lastType == POSITION_TYPE_SELL)
-      {
-         double nextLot = NormalizeVolume(ActiveInitialLot() * MathPow(ActiveMultiplier(), CurrentTurns));
-         if(trade.Buy(nextLot, _Symbol, ask, 0, 0) && TradeSucceeded())
+         if(ask >= UpperLevel && lastType == POSITION_TYPE_SELL)
          {
-            CurrentTurns++;
-            SetStatus("Recovery BUY opened.");
-            AppendEvent("TRADE_BUY", spread, totalProfit, "recovery_lot=" + DoubleToString(nextLot, 2));
-         }
-         else
-         {
-            LogTradeFailure("Recovery BUY");
+            if(!TrendAllowsRecovery(POSITION_TYPE_BUY, spread, totalProfit))
+            {
+               WriteDashboardStatus(spread, hasPosition, totalProfit);
+               return;
+            }
+
+            double nextLot = NextRecoveryLot();
+            if(trade.Buy(nextLot, _Symbol, ask, 0, 0) && TradeSucceeded())
+            {
+               CurrentTurns++;
+               LastTradeTime = TimeCurrent();
+               SetStatus("Recovery BUY opened.");
+               AppendEvent("TRADE_BUY", spread, totalProfit, "recovery_lot=" + DoubleToString(nextLot, 2));
+            }
+            else
+            {
+               LogTradeFailure("Recovery BUY");
+            }
          }
       }
    }
@@ -361,6 +436,182 @@ double CurrentManagedProfit()
    }
 
    return totalProfit;
+}
+
+void GetManagedPositionState(
+   bool &hasPosition,
+   int &positionCount,
+   double &totalProfit,
+   ENUM_POSITION_TYPE &firstType,
+   datetime &firstTime,
+   double &firstOpenPrice,
+   ENUM_POSITION_TYPE &lastType,
+   datetime &lastTime,
+   double &lastOpenPrice
+)
+{
+   hasPosition = false;
+   positionCount = 0;
+   totalProfit = 0.0;
+   firstType = (ENUM_POSITION_TYPE)-1;
+   lastType = (ENUM_POSITION_TYPE)-1;
+   firstTime = 0;
+   lastTime = 0;
+   firstOpenPrice = 0.0;
+   lastOpenPrice = 0.0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!m_position.SelectByIndex(i) || m_position.Symbol() != _Symbol || m_position.Magic() != InpMagic)
+         continue;
+
+      datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      ENUM_POSITION_TYPE positionType = m_position.PositionType();
+
+      hasPosition = true;
+      positionCount++;
+      totalProfit += m_position.Profit() + m_position.Commission() + m_position.Swap();
+
+      if(firstTime == 0 || positionTime < firstTime)
+      {
+         firstTime = positionTime;
+         firstType = positionType;
+         firstOpenPrice = openPrice;
+      }
+
+      if(lastTime == 0 || positionTime >= lastTime)
+      {
+         lastTime = positionTime;
+         lastType = positionType;
+         lastOpenPrice = openPrice;
+      }
+   }
+}
+
+void SyncCycleFromPositions(
+   bool hasPosition,
+   int positionCount,
+   ENUM_POSITION_TYPE firstType,
+   datetime firstTime,
+   double firstOpenPrice,
+   double bid,
+   double ask,
+   int spread
+)
+{
+   if(!hasPosition)
+      return;
+
+   if(CurrentTurns < positionCount)
+      CurrentTurns = positionCount;
+
+   if(CycleStartTime == 0)
+      CycleStartTime = firstTime > 0 ? firstTime : TimeCurrent();
+
+   if(CycleStartedAt == 0)
+      CycleStartedAt = CycleStartTime;
+
+   if(CycleStartBid <= 0.0)
+      CycleStartBid = bid;
+
+   if(CycleStartAsk <= 0.0)
+      CycleStartAsk = ask;
+
+   if(CycleStartSpread <= 0)
+      CycleStartSpread = spread;
+
+   if(CycleId == "")
+      CycleId = IntegerToString((long)CycleStartTime) + "_" + _Symbol + "_" + IntegerToString(InpMagic);
+
+   if((UpperLevel <= 0.0 || LowerLevel <= 0.0) && firstOpenPrice > 0.0)
+      ConfigureCycleLevels(firstType, firstOpenPrice);
+}
+
+void ConfigureCycleLevels(ENUM_POSITION_TYPE entryType, double entryPrice)
+{
+   if(entryType == POSITION_TYPE_SELL)
+   {
+      LowerLevel = entryPrice;
+      UpperLevel = entryPrice + (ActiveZoneHeight() * _Point);
+   }
+   else
+   {
+      UpperLevel = entryPrice;
+      LowerLevel = entryPrice - (ActiveZoneHeight() * _Point);
+   }
+}
+
+ENUM_POSITION_TYPE InitialEntryType()
+{
+   if(!InpUseTrendEntry)
+      return POSITION_TYPE_BUY;
+
+   RefreshFeatureCache(false);
+   int trendPoints = InpTrendFilterPoints;
+   if(trendPoints < 1)
+      trendPoints = 1;
+
+   if(CachedMaDeltaPoints <= -trendPoints)
+      return POSITION_TYPE_SELL;
+
+   return POSITION_TYPE_BUY;
+}
+
+bool CanTradeNow()
+{
+   int waitSeconds = InpMinSecondsBetweenTrades;
+   if(waitSeconds < 0)
+      waitSeconds = 0;
+
+   if(waitSeconds == 0 || LastTradeTime == 0)
+      return true;
+
+   int elapsed = (int)(TimeCurrent() - LastTradeTime);
+   if(elapsed >= waitSeconds)
+      return true;
+
+   SetStatus("Waiting for trade cooldown before opening another order.");
+   return false;
+}
+
+double NextRecoveryLot()
+{
+   return NormalizeVolume(ActiveInitialLot() * MathPow(ActiveMultiplier(), CurrentTurns));
+}
+
+bool TrendAllowsRecovery(ENUM_POSITION_TYPE recoveryType, int spread, double totalProfit)
+{
+   if(!InpBlockCounterTrendRecovery)
+      return true;
+
+   RefreshFeatureCache(false);
+   int trendPoints = InpTrendFilterPoints;
+   if(trendPoints < 1)
+      trendPoints = 1;
+   bool blocked = false;
+
+   if(recoveryType == POSITION_TYPE_SELL && CachedMaDeltaPoints > trendPoints)
+      blocked = true;
+
+   if(recoveryType == POSITION_TYPE_BUY && CachedMaDeltaPoints < -trendPoints)
+      blocked = true;
+
+   if(!blocked)
+      return true;
+
+   string side = recoveryType == POSITION_TYPE_SELL ? "SELL" : "BUY";
+   string message = "Recovery " + side + " blocked by trend filter. Holding basket.";
+   SetStatus(message);
+
+   if(LastRecoveryBlockLog == 0 || TimeCurrent() - LastRecoveryBlockLog >= 30)
+   {
+      LastRecoveryBlockLog = TimeCurrent();
+      AppendEvent("RECOVERY_BLOCKED_TREND", spread, totalProfit,
+                  message + " ma_delta=" + DoubleToString(CachedMaDeltaPoints, 1));
+   }
+
+   return false;
 }
 
 void InitializeModelDefaults()
@@ -881,6 +1132,8 @@ void ReadDashboardControl(bool forceRead)
    DashboardZoneHeight = 0;
    DashboardMultiplier = 0.0;
    DashboardTargetUSD = 0.0;
+   DashboardQuickTargetUSD = 0.0;
+   DashboardMaxLossUSD = 0.0;
    DashboardMaxTurns = 0;
    DashboardMaxSpread = 0;
 
@@ -907,6 +1160,10 @@ void ReadDashboardControl(bool forceRead)
          DashboardMultiplier = StringToDouble(value);
       else if(key == "target_usd")
          DashboardTargetUSD = StringToDouble(value);
+      else if(key == "quick_target_usd")
+         DashboardQuickTargetUSD = StringToDouble(value);
+      else if(key == "max_loss_usd")
+         DashboardMaxLossUSD = StringToDouble(value);
       else if(key == "max_turns")
          DashboardMaxTurns = (int)StringToInteger(value);
       else if(key == "max_spread")
@@ -937,6 +1194,9 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
       return;
 
    FileWriteString(handle, "ea_message=" + LastStatus + "\n");
+   FileWriteString(handle, "app_version=" + EA_APP_VERSION + "\n");
+   FileWriteString(handle, "ea_version=" + EA_BUILD_VERSION + "\n");
+   FileWriteString(handle, "ea_build_number=" + IntegerToString(EA_BUILD_NUMBER) + "\n");
    FileWriteString(handle, "symbol=" + _Symbol + "\n");
    FileWriteString(handle, "event_source=" + LastEventSource + "\n");
    FileWriteString(handle, "dashboard_enabled=" + BoolFlag(DashboardEnabled) + "\n");
@@ -946,6 +1206,8 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "max_spread=" + IntegerToString(ActiveMaxSpread()) + "\n");
    FileWriteString(handle, "turns=" + IntegerToString(CurrentTurns) + "\n");
    FileWriteString(handle, "total_profit=" + DoubleToString(totalProfit, 2) + "\n");
+   FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
+   FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
    FileWriteString(handle, "upper_level=" + DoubleToString(UpperLevel, _Digits) + "\n");
    FileWriteString(handle, "lower_level=" + DoubleToString(LowerLevel, _Digits) + "\n");
    FileWriteString(handle, "cycle_id=" + CycleId + "\n");
@@ -981,6 +1243,8 @@ void AcknowledgeCloseAllCommand()
    FileWriteString(handle, "zone_height=" + IntegerToString(ActiveZoneHeight()) + "\n");
    FileWriteString(handle, "multiplier=" + DoubleToString(ActiveMultiplier(), 2) + "\n");
    FileWriteString(handle, "target_usd=" + DoubleToString(ActiveTargetUSD(), 2) + "\n");
+   FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
+   FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
    FileWriteString(handle, "max_turns=" + IntegerToString(ActiveMaxTurns()) + "\n");
    FileWriteString(handle, "max_spread=" + IntegerToString(ActiveMaxSpread()) + "\n");
    FileWriteString(handle, "updated_by=mt5\n");
@@ -1020,6 +1284,16 @@ double ActiveMultiplier()
 double ActiveTargetUSD()
 {
    return(DashboardTargetUSD > 0.0 ? DashboardTargetUSD : TargetUSD);
+}
+
+double ActiveQuickTargetUSD()
+{
+   return(DashboardQuickTargetUSD > 0.0 ? DashboardQuickTargetUSD : InpQuickBasketProfitUSD);
+}
+
+double ActiveMaxFloatingLossUSD()
+{
+   return(DashboardMaxLossUSD > 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD);
 }
 
 int ActiveMaxTurns()
@@ -1123,10 +1397,12 @@ void DrawDashboard(int spread) {
    string modelStatus = InpUseAiFilter ? (ModelGateEnabled ? "ACTIVE" : "RECORDING") : "OFF";
 
    Comment("--- RECOVERY SHIELD ---\n",
+           "Version: ", EA_BUILD_VERSION, "\n",
            "Current Spread: ", spread, "\n",
            "Max Allowed: ", ActiveMaxSpread(), "\n",
            "Status: ", status, "\n",
            "Dashboard: ", dashboard, "\n",
+           "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2), "\n",
            "AI Filter: ", modelStatus, " | Score: ", DoubleToString(LastModelScore, 3), "\n",
            "EA Message: ", LastStatus, "\n",
            "Turns: ", CurrentTurns);

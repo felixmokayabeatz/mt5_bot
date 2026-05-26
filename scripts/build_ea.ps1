@@ -150,7 +150,11 @@ function Copy-EaSource([string]$SourcePath, [string]$TargetDirectory) {
 
   if ($shouldCopy) {
     if (Test-Path -LiteralPath $targetSource -PathType Leaf) {
-      Copy-Item -LiteralPath $targetSource -Destination "$targetSource.bak" -Force
+      try {
+        Copy-Item -LiteralPath $targetSource -Destination "$targetSource.bak" -Force
+      } catch {
+        Write-Host "Could not refresh backup file, continuing: $targetSource.bak"
+      }
     }
 
     Copy-Item -LiteralPath $SourcePath -Destination $targetSource -Force
@@ -184,6 +188,83 @@ function Get-CompileErrorCount([string]$LogText) {
 
   $errorMatches = [regex]::Matches($LogText, "^\s*.*\s+:\s+error\s+", $multilineIgnoreCase)
   return $errorMatches.Count
+}
+
+function Read-SourceVersion([string]$SourcePath) {
+  $text = Get-Content -LiteralPath $SourcePath -Raw
+  $appVersion = "v1.0.0"
+  $buildNumber = "1"
+
+  $appMatch = [regex]::Match($text, '#define\s+EA_APP_VERSION\s+"([^"]+)"')
+  if ($appMatch.Success) {
+    $appVersion = $appMatch.Groups[1].Value
+  }
+
+  $buildMatch = [regex]::Match($text, '#define\s+EA_BUILD_NUMBER\s+([0-9]+)')
+  if ($buildMatch.Success) {
+    $buildNumber = $buildMatch.Groups[1].Value
+  }
+
+  return [PSCustomObject]@{
+    AppVersion = $appVersion
+    BuildNumber = $buildNumber
+    EaVersion = "$appVersion`_$buildNumber"
+  }
+}
+
+function Find-CommonFilesDir {
+  if (![string]::IsNullOrWhiteSpace($env:MT5_COMMON_FILES_DIR)) {
+    return (Resolve-FullPath $env:MT5_COMMON_FILES_DIR)
+  }
+
+  if (![string]::IsNullOrWhiteSpace($env:APPDATA)) {
+    return (Join-Path $env:APPDATA "MetaQuotes\Terminal\Common\Files")
+  }
+
+  return $null
+}
+
+function Write-VersionManifest([string]$TargetPath, [object]$VersionInfo, [string]$CompiledPath, [string]$TargetSource, [string]$LogPath) {
+  $manifestDir = Split-Path -Parent $TargetPath
+  New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+
+  $lines = @(
+    "app_version=$($VersionInfo.AppVersion)",
+    "build_number=$($VersionInfo.BuildNumber)",
+    "ea_version=$($VersionInfo.EaVersion)",
+    "compiled_at=$((Get-Date).ToUniversalTime().ToString("s"))+00:00",
+    "compiled_ex5=$CompiledPath",
+    "compiled_source=$TargetSource",
+    "compile_log=$LogPath",
+    "version_source=build_ea.ps1"
+  )
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllLines($TargetPath, $lines, $utf8NoBom)
+}
+
+function Publish-VersionedBuild([object]$VersionInfo, [string]$TargetSource, [string]$CompiledPath, [string]$TargetDirectory, [string]$LogPath) {
+  $buildDir = Join-Path $TargetDirectory "builds"
+  New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+
+  $sourceStem = [System.IO.Path]::GetFileNameWithoutExtension($TargetSource)
+  $versionedSource = Join-Path $buildDir "$sourceStem`_$($VersionInfo.EaVersion).mq5"
+  $versionedCompiled = Join-Path $buildDir "$sourceStem`_$($VersionInfo.EaVersion).ex5"
+
+  Copy-Item -LiteralPath $TargetSource -Destination $versionedSource -Force
+  Copy-Item -LiteralPath $CompiledPath -Destination $versionedCompiled -Force
+
+  $targetManifest = Join-Path $TargetDirectory "recovery_shield_version.txt"
+  Write-VersionManifest $targetManifest $VersionInfo $versionedCompiled $versionedSource $LogPath
+
+  $commonFilesDir = Find-CommonFilesDir
+  if (![string]::IsNullOrWhiteSpace($commonFilesDir)) {
+    $commonManifest = Join-Path $commonFilesDir "recovery_shield_version.txt"
+    Write-VersionManifest $commonManifest $VersionInfo $versionedCompiled $versionedSource $LogPath
+  }
+
+  Write-Host "Versioned EA build: $($VersionInfo.EaVersion)"
+  Write-Host "Archived EX5: $versionedCompiled"
 }
 
 function Invoke-MetaEditorCompile([string]$MetaEditorPath, [string]$TargetSource) {
@@ -230,6 +311,11 @@ function Invoke-MetaEditorCompile([string]$MetaEditorPath, [string]$TargetSource
 
   Write-Host "Compiled EA: $compiledPath"
   Write-Host "Compile log: $logPath"
+
+  return [PSCustomObject]@{
+    CompiledPath = $compiledPath
+    LogPath = $logPath
+  }
 }
 
 function Invoke-EaBuild {
@@ -246,6 +332,7 @@ function Invoke-EaBuild {
 
   $targetDir = Join-Path $expertsRoot $TargetSubdir
   $targetSource = Copy-EaSource $sourcePath $targetDir
+  $versionInfo = Read-SourceVersion $targetSource
 
   if ($NoCompile) {
     Write-Host "Skipped compile because -NoCompile was used."
@@ -253,7 +340,8 @@ function Invoke-EaBuild {
   }
 
   $metaEditorPath = Find-MetaEditor $MetaEditor
-  Invoke-MetaEditorCompile $metaEditorPath $targetSource
+  $compileResult = Invoke-MetaEditorCompile $metaEditorPath $targetSource
+  Publish-VersionedBuild $versionInfo $targetSource $compileResult.CompiledPath $targetDir $compileResult.LogPath
 }
 
 if ($Help) {

@@ -21,6 +21,7 @@ from .services import (
     read_control,
     read_model,
     read_status,
+    read_version,
     runtime_paths,
     status_file_path,
     validate_control,
@@ -76,6 +77,7 @@ def dashboard(request):
         "control": control,
         "status": status,
         "model": read_model(),
+        "version": read_version(),
         **paths,
         **file_info,
         "event_rows": csv_data_row_count(event_log_file_path()),
@@ -99,6 +101,7 @@ def status_api(request):
             "control": control,
             "status": status,
             "model": read_model(),
+            "version": read_version(),
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "paths": {key: str(value) for key, value in paths.items()},
             "files": {
@@ -107,6 +110,7 @@ def status_api(request):
                 "event_log": file_info["event_log_file_info"],
                 "cycle_log": file_info["cycle_log_file_info"],
                 "model": file_info["model_file_info"],
+                "version": file_info["version_file_info"],
             },
             "counts": {
                 "events": csv_data_row_count(event_log_file_path()),

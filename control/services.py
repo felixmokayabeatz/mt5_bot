@@ -9,7 +9,11 @@ STATUS_FILE_NAME = "recovery_shield_status.txt"
 EVENT_LOG_FILE_NAME = "recovery_shield_events.csv"
 CYCLE_LOG_FILE_NAME = "recovery_shield_cycles.csv"
 MODEL_FILE_NAME = "recovery_shield_model.txt"
+VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
+APP_VERSION = "v1.0.0"
+EA_BUILD_NUMBER = "1"
+EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 
 DEFAULT_CONTROL = {
     "enabled": "0",
@@ -18,6 +22,8 @@ DEFAULT_CONTROL = {
     "zone_height": "500",
     "multiplier": "1.6",
     "target_usd": "0.50",
+    "quick_target_usd": "0.50",
+    "max_loss_usd": "0",
     "max_turns": "3",
     "max_spread": "500",
 }
@@ -73,6 +79,10 @@ def model_file_path():
     return common_files_dir() / MODEL_FILE_NAME
 
 
+def version_file_path():
+    return common_files_dir() / VERSION_FILE_NAME
+
+
 def runtime_paths():
     return {
         "common_files_dir": common_files_dir(),
@@ -81,6 +91,7 @@ def runtime_paths():
         "event_log_file": event_log_file_path(),
         "cycle_log_file": cycle_log_file_path(),
         "model_file": model_file_path(),
+        "version_file": version_file_path(),
     }
 
 
@@ -101,7 +112,7 @@ def read_key_values(path):
         if "=" not in raw_line:
             continue
         key, value = raw_line.split("=", 1)
-        values[key.strip()] = value.strip()
+        values[key.strip().lstrip("\ufeff")] = value.strip()
     return values
 
 
@@ -149,6 +160,19 @@ def read_model():
         "training_total_profit": "0.00",
     }
     values.update(read_key_values(model_file_path()))
+    return values
+
+
+def read_version():
+    values = {
+        "app_version": APP_VERSION,
+        "ea_version": EA_VERSION,
+        "build_number": EA_BUILD_NUMBER,
+        "compiled_at": "-",
+        "compiled_ex5": "-",
+        "version_source": "dashboard-default",
+    }
+    values.update(read_key_values(version_file_path()))
     return values
 
 
@@ -218,6 +242,7 @@ def file_info_bundle(paths):
         "event_log_file_info": file_debug_info(paths["event_log_file"]),
         "cycle_log_file_info": file_debug_info(paths["cycle_log_file"]),
         "model_file_info": file_debug_info(paths["model_file"]),
+        "version_file_info": file_debug_info(paths["version_file"]),
     }
 
 
@@ -227,6 +252,8 @@ def validate_control(post_data):
         "zone_height": int_value(post_data, "zone_height", minimum=1, maximum=100000),
         "multiplier": decimal_value(post_data, "multiplier", minimum=Decimal("1.0")),
         "target_usd": decimal_value(post_data, "target_usd", minimum=Decimal("0.01")),
+        "quick_target_usd": decimal_value(post_data, "quick_target_usd", minimum=Decimal("0")),
+        "max_loss_usd": decimal_value(post_data, "max_loss_usd", minimum=Decimal("0")),
         "max_turns": int_value(post_data, "max_turns", minimum=1, maximum=20),
         "max_spread": int_value(post_data, "max_spread", minimum=1, maximum=10000),
     }

@@ -69,6 +69,13 @@ h1 {
   line-height: 1;
 }
 
+.version-line {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
 h2 {
   font-size: 1.1rem;
 }

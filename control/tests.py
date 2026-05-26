@@ -3,7 +3,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from .services import common_files_dir, validate_control
+from .services import common_files_dir, read_version, validate_control
 
 
 class ServiceTests(SimpleTestCase):
@@ -14,12 +14,15 @@ class ServiceTests(SimpleTestCase):
                 "zone_height": "600",
                 "multiplier": "1.8",
                 "target_usd": "1.25",
+                "quick_target_usd": "0.50",
+                "max_loss_usd": "0",
                 "max_turns": "4",
                 "max_spread": "350",
             }
         )
 
         self.assertEqual(cleaned["initial_lot"], "0.02")
+        self.assertEqual(cleaned["quick_target_usd"], "0.5")
         self.assertEqual(cleaned["max_turns"], "4")
 
     def test_common_files_dir_uses_override(self):
@@ -28,6 +31,19 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(str(common_files_dir()), temp_dir)
+        finally:
+            if previous is None:
+                os.environ.pop("MT5_COMMON_FILES_DIR", None)
+            else:
+                os.environ["MT5_COMMON_FILES_DIR"] = previous
+
+    def test_read_version_has_default_build_label(self):
+        temp_dir = str(Path.cwd() / ".tmp" / "version-default")
+        previous = os.environ.get("MT5_COMMON_FILES_DIR")
+        os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
+        try:
+            self.assertEqual(read_version()["app_version"], "v1.0.0")
+            self.assertEqual(read_version()["ea_version"], "v1.0.0_1")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
