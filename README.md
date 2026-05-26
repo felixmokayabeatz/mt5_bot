@@ -24,6 +24,32 @@ Set `MODEL_THRESHOLD` if you want the trainer to write a different decision cuto
 
 The EA keeps trading decisions on ticks, but slow shared-file reads are throttled with `InpControlPollSeconds`, status writes with `InpStatusWriteSeconds`, and the ATR/MA/RSI feature calculations are cached from indicator buffers. Keep `InpControlPollSeconds=1` for a dashboard that still reacts quickly without doing file I/O on every market tick.
 
+## EA build automation
+
+Use the build helper instead of manually copying `volatilty.mq5` into MetaTrader. It copies the EA source into `MQL5\Experts\RecoveryShield`, keeps a `.bak` of the previous target file, and compiles it with MetaEditor when MetaEditor can be found.
+
+```powershell
+.\build_ea.ps1
+```
+
+Run this while editing if you want automatic rebuilds:
+
+```powershell
+.\build_ea.ps1 -Watch
+```
+
+If auto-detection picks the wrong terminal, set the paths explicitly:
+
+```powershell
+$env:MT5_EXPERTS_DIR = "C:\Users\you\AppData\Roaming\MetaQuotes\Terminal\<terminal-id>\MQL5\Experts"
+$env:METAEDITOR_EXE = "C:\Program Files\MetaTrader 5\metaeditor64.exe"
+.\build_ea.ps1
+```
+
+You can also set `MT5_DATA_DIR` to the terminal data folder and the script will use its `MQL5\Experts` directory.
+
+Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
+
 ## AI training
 
 The trainer writes `recovery_shield_model.txt` atomically so the EA does not read a partial model. When enough rows exist, it trains a profit-weighted logistic filter and, if there is enough history for validation, chooses the decision threshold from recent closed cycles. Set `MODEL_THRESHOLD` to force your own threshold instead.
