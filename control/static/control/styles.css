@@ -272,6 +272,14 @@ dd {
   font-weight: 750;
 }
 
+dd[data-state="blocked"] {
+  color: var(--danger);
+}
+
+dd[data-state="open"] {
+  color: var(--accent-dark);
+}
+
 .messages {
   display: grid;
   gap: 10px;

@@ -104,7 +104,7 @@
             <input name="max_turns" inputmode="numeric" value="{{ control.max_turns }}">
           </label>
           <label>
-            <span>Max spread</span>
+            <span>Max allowed spread</span>
             <input name="max_spread" inputmode="numeric" value="{{ control.max_spread }}">
           </label>
         </div>
@@ -138,6 +138,14 @@
           <div>
             <dt>Spread</dt>
             <dd id="spread">{{ status.spread|default:"-" }}</dd>
+          </div>
+          <div>
+            <dt>Max allowed spread</dt>
+            <dd id="max-spread-status">{{ status.max_spread|default:control.max_spread|default:"-" }}</dd>
+          </div>
+          <div>
+            <dt>Spread gate</dt>
+            <dd id="spread-gate">-</dd>
           </div>
           <div>
             <dt>Turns</dt>
@@ -319,6 +327,9 @@
         document.getElementById("running-alert-version").textContent = runningVersion;
         document.getElementById("symbol").textContent = status.symbol || "-";
         document.getElementById("spread").textContent = status.spread || "-";
+        document.getElementById("max-spread-status").textContent =
+          status.max_spread || control.max_spread || "-";
+        updateSpreadGate(status.spread, status.max_spread || control.max_spread);
         document.getElementById("turns").textContent = status.turns || "0";
         document.getElementById("profit").textContent = status.total_profit || "0.00";
         document.getElementById("quick-target").textContent = status.quick_target_usd || "0.50";
@@ -353,6 +364,26 @@
         document.getElementById("cycle-rows").textContent = counts.cycles || "0";
       } catch (error) {
         document.getElementById("ea-message").textContent = "Dashboard cannot read status yet.";
+      }
+    }
+
+    function updateSpreadGate(spreadValue, maxSpreadValue) {
+      const spreadGate = document.getElementById("spread-gate");
+      const spread = Number.parseFloat(spreadValue);
+      const maxSpread = Number.parseFloat(maxSpreadValue);
+
+      if (!Number.isFinite(spread) || !Number.isFinite(maxSpread)) {
+        spreadGate.textContent = "-";
+        spreadGate.dataset.state = "unknown";
+        return;
+      }
+
+      if (spread > maxSpread) {
+        spreadGate.textContent = `Blocked: ${spread} > ${maxSpread}`;
+        spreadGate.dataset.state = "blocked";
+      } else {
+        spreadGate.textContent = `Open: ${spread} <= ${maxSpread}`;
+        spreadGate.dataset.state = "open";
       }
     }
 
