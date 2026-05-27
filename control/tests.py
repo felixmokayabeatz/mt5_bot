@@ -58,8 +58,8 @@ class ServiceTests(SimpleTestCase):
         previous = os.environ.get("MT5_COMMON_FILES_DIR")
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
-            self.assertEqual(read_version()["app_version"], "v1.0.3")
-            self.assertEqual(read_version()["ea_version"], "v1.0.3_4")
+            self.assertEqual(read_version()["app_version"], "v1.0.5")
+            self.assertEqual(read_version()["ea_version"], "v1.0.5_6")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -70,7 +70,7 @@ class ServiceTests(SimpleTestCase):
         state = runtime_state(
             {"enabled": "1"},
             {"ea_message": "Waiting: spread is above the max allowed."},
-            {"ea_version": "v1.0.3_4"},
+            {"ea_version": "v1.0.5_6"},
         )
 
         self.assertEqual(state["badge_state"], "warning")
@@ -79,8 +79,8 @@ class ServiceTests(SimpleTestCase):
 
         confirmed = runtime_state(
             {"enabled": "1"},
-            {"ea_version": "v1.0.3_4"},
-            {"ea_version": "v1.0.3_4"},
+            {"ea_version": "v1.0.5_6"},
+            {"ea_version": "v1.0.5_6"},
         )
 
         self.assertEqual(confirmed["badge_state"], "confirmed")

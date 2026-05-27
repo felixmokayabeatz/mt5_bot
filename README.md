@@ -30,8 +30,8 @@ The EA can close baskets fast with `Quick target USD`, which is separate from th
 
 The recovery logic now also has guardrails:
 
-- `Allow recovery` is off by default in `v1.0.3_4`, so the bot takes one shot and lets TP/SL/loss cap handle the outcome.
-- `InpUseTrendEntry` now waits for a fast M1 trend confirmation before starting a new cycle instead of selling only because a slower MA is stale.
+- `Allow recovery` is off by default in `v1.0.5_6`, so the bot takes one shot and lets TP/SL/loss cap handle the outcome.
+- `InpUseTrendEntry` now uses fast M1 continuation and pullback entries instead of selling only because a slower MA is stale.
 - `Take profit points` and `Stop loss points` attach hard broker-side exits to each order when hard stops are enabled.
 - `InpMinSecondsBetweenTrades` prevents duplicate orders from tick/timer events.
 - `InpUseTrendEntry` starts new cycles in the confirmed fast trend direction.
@@ -69,7 +69,7 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.3` and the current EA build is `v1.0.3_4`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.3_4.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.5` and the current EA build is `v1.0.5_6`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.5_6.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 

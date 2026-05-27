@@ -11,8 +11,8 @@ CYCLE_LOG_FILE_NAME = "recovery_shield_cycles.csv"
 MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
-APP_VERSION = "v1.0.3"
-EA_BUILD_NUMBER = "4"
+APP_VERSION = "v1.0.5"
+EA_BUILD_NUMBER = "6"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 
 DEFAULT_CONTROL = {

@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Recovery Shield Control</title>
-  <link rel="stylesheet" href="{% static 'control/styles.css' %}">
+  <link rel="stylesheet" href="{% static 'control/styles.css' %}?v={{ version.ea_version|default:'v1.0.5_6' }}">
 </head>
 <body>
   <main class="shell">
@@ -14,9 +14,9 @@
         <p class="eyebrow">MetaTrader 5 Demo Control</p>
         <h1>Recovery Shield</h1>
         <p class="version-line">
-          App <span id="app-version">{{ version.app_version|default:"v1.0.3" }}</span>
+          App <span id="app-version">{{ version.app_version|default:"v1.0.5" }}</span>
           | Live EA <span id="ea-version">{{ status.ea_version|default:"Waiting for EA" }}</span>
-          | Compiled <span id="compiled-header-version">{{ version.ea_version|default:"v1.0.3_4" }}</span>
+          | Compiled <span id="compiled-header-version">{{ version.ea_version|default:"v1.0.5_6" }}</span>
         </p>
       </div>
       <div class="status-pill" data-enabled="{{ control.enabled }}" data-state="{{ runtime_state.badge_state }}">
@@ -25,7 +25,7 @@
     </header>
 
     <section class="version-alert" id="version-alert" {% if not runtime_state.version_mismatch %}hidden{% endif %}>
-      Compiled EA is <strong id="compiled-alert-version">{{ version.ea_version|default:"v1.0.3_4" }}</strong>, but the running EA is <strong id="running-alert-version">{{ runtime_state.running_version }}</strong>. Reattach the EA or restart MT5.
+      Compiled EA is <strong id="compiled-alert-version">{{ version.ea_version|default:"v1.0.5_6" }}</strong>, but the running EA is <strong id="running-alert-version">{{ runtime_state.running_version }}</strong>. Reattach the EA or restart MT5.
     </section>
 
     {% if messages %}
@@ -134,7 +134,7 @@
           </div>
           <div>
             <dt>Compiled build</dt>
-            <dd id="compiled-version">{{ version.ea_version|default:"v1.0.3_4" }}</dd>
+            <dd id="compiled-version">{{ version.ea_version|default:"v1.0.5_6" }}</dd>
           </div>
           <div>
             <dt>Symbol</dt>
@@ -326,12 +326,12 @@
         statusPill.dataset.state = runtime.badge_state || (control.enabled === "1" ? "warning" : "paused");
 
         document.getElementById("ea-message").textContent = status.ea_message || "No EA status yet";
-        document.getElementById("app-version").textContent = status.app_version || version.app_version || "v1.0.3";
+        document.getElementById("app-version").textContent = status.app_version || version.app_version || "v1.0.5";
         document.getElementById("ea-version").textContent = status.ea_version || "Waiting for EA";
-        document.getElementById("compiled-header-version").textContent = version.ea_version || "v1.0.3_4";
+        document.getElementById("compiled-header-version").textContent = version.ea_version || "v1.0.5_6";
         document.getElementById("live-ea-version").textContent = status.ea_version || "Waiting for EA";
-        document.getElementById("compiled-version").textContent = version.ea_version || "v1.0.3_4";
-        const compiledVersion = version.ea_version || "v1.0.3_4";
+        document.getElementById("compiled-version").textContent = version.ea_version || "v1.0.5_6";
+        const compiledVersion = version.ea_version || "v1.0.5_6";
         const runningVersion = status.ea_version || "unknown / old EA";
         const versionAlert = document.getElementById("version-alert");
         const versionMismatch = runningVersion !== compiledVersion;

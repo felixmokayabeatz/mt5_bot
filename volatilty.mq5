@@ -6,9 +6,9 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
-#define EA_APP_VERSION "v1.0.3"
-#define EA_BUILD_NUMBER 4
-#define EA_BUILD_VERSION "v1.0.3_4"
+#define EA_APP_VERSION "v1.0.5"
+#define EA_BUILD_NUMBER 6
+#define EA_BUILD_VERSION "v1.0.5_6"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
@@ -37,8 +37,8 @@ input bool   InpBlockCounterTrendRecovery = true;   // Do not add recovery trade
 input int    InpTrendFilterPoints = 50;             // MA delta needed to call trend strong
 input ENUM_TIMEFRAMES InpEntryTrendTimeframe = PERIOD_M1; // Fast entry trend timeframe
 input int    InpEntryTrendLookbackBars = 3;         // Closed bars used for fast entry direction
-input int    InpEntryMinMovePoints = 80;            // Minimum fast move before opening a trend trade
-input int    InpEntryMinBodyPoints = 10;            // Minimum latest closed candle body
+input int    InpEntryMinMovePoints = 50;            // Minimum fast move before opening a trend trade
+input int    InpEntryMinBodyPoints = 5;             // Minimum latest closed candle body
 input int    InpEntryFastMaPeriod = 5;              // Fast MA for entry trend
 input int    InpEntrySlowMaPeriod = 13;             // Slow MA for entry trend
 input int    InpEntryRsiPeriod = 7;                 // RSI used to avoid exhausted entries
@@ -749,37 +749,68 @@ int FastEntryTrendSignal(int spread)
    bool enoughBullishBars = (bullishBars >= MathMax(1, lookbackBars - 1));
    bool enoughBearishBars = (bearishBars >= MathMax(1, lookbackBars - 1));
 
-   bool buySignal = LastEntryTrendMovePoints >= minMovePoints &&
-                    LastEntryTrendBodyPoints >= minBodyPoints &&
-                    LastEntryTrendMaDeltaPoints > 0.0 &&
-                    latestClose > fastMa &&
-                    (risingCloses || enoughBullishBars) &&
-                    LastEntryTrendRsi < 82.0;
+   bool buyContinuation = LastEntryTrendMovePoints >= minMovePoints &&
+                          LastEntryTrendBodyPoints >= minBodyPoints &&
+                          LastEntryTrendMaDeltaPoints > 0.0 &&
+                          latestClose > fastMa &&
+                          (risingCloses || enoughBullishBars) &&
+                          LastEntryTrendRsi <= 88.0;
 
-   bool sellSignal = LastEntryTrendMovePoints <= -minMovePoints &&
-                     LastEntryTrendBodyPoints <= -minBodyPoints &&
-                     LastEntryTrendMaDeltaPoints < 0.0 &&
-                     latestClose < fastMa &&
-                     (fallingCloses || enoughBearishBars) &&
-                     LastEntryTrendRsi > 18.0;
+   bool sellContinuation = LastEntryTrendMovePoints <= -minMovePoints &&
+                           LastEntryTrendBodyPoints <= -minBodyPoints &&
+                           LastEntryTrendMaDeltaPoints < 0.0 &&
+                           latestClose < fastMa &&
+                           (fallingCloses || enoughBearishBars) &&
+                           LastEntryTrendRsi >= 22.0;
+
+   bool buyPullback = LastEntryTrendMaDeltaPoints >= minMovePoints &&
+                      LastEntryTrendMovePoints <= -(minMovePoints * 0.35) &&
+                      LastEntryTrendBodyPoints <= -minBodyPoints &&
+                      latestClose > slowMa &&
+                      LastEntryTrendRsi >= 38.0 &&
+                      LastEntryTrendRsi <= 78.0;
+
+   bool sellPullback = LastEntryTrendMaDeltaPoints <= -minMovePoints &&
+                       LastEntryTrendMovePoints >= (minMovePoints * 0.35) &&
+                       LastEntryTrendBodyPoints >= minBodyPoints &&
+                       latestClose < slowMa &&
+                       LastEntryTrendRsi >= 22.0 &&
+                       LastEntryTrendRsi <= 62.0;
 
    LastEntryTrendReason = "move=" + DoubleToString(LastEntryTrendMovePoints, 1) +
                           " body=" + DoubleToString(LastEntryTrendBodyPoints, 1) +
                           " ma_delta=" + DoubleToString(LastEntryTrendMaDeltaPoints, 1) +
                           " rsi=" + DoubleToString(LastEntryTrendRsi, 1);
 
-   if(buySignal && !sellSignal)
+   if(buyContinuation && !sellContinuation)
    {
       LastEntryTrendSignal = 1;
+      LastEntryTrendReason = "continuation_buy " + LastEntryTrendReason;
       return 1;
    }
 
-   if(sellSignal && !buySignal)
+   if(sellContinuation && !buyContinuation)
    {
       LastEntryTrendSignal = -1;
+      LastEntryTrendReason = "continuation_sell " + LastEntryTrendReason;
       return -1;
    }
 
+   if(buyPullback && !sellPullback)
+   {
+      LastEntryTrendSignal = 1;
+      LastEntryTrendReason = "pullback_buy " + LastEntryTrendReason;
+      return 1;
+   }
+
+   if(sellPullback && !buyPullback)
+   {
+      LastEntryTrendSignal = -1;
+      LastEntryTrendReason = "pullback_sell " + LastEntryTrendReason;
+      return -1;
+   }
+
+   LastEntryTrendReason = "wait " + LastEntryTrendReason;
    return 0;
 }
 
