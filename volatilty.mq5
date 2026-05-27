@@ -6,9 +6,9 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
-#define EA_APP_VERSION "v1.0.5"
-#define EA_BUILD_NUMBER 6
-#define EA_BUILD_VERSION "v1.0.5_6"
+#define EA_APP_VERSION "v1.0.7"
+#define EA_BUILD_NUMBER 8
+#define EA_BUILD_VERSION "v1.0.7_8"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
@@ -42,6 +42,13 @@ input int    InpEntryMinBodyPoints = 5;             // Minimum latest closed can
 input int    InpEntryFastMaPeriod = 5;              // Fast MA for entry trend
 input int    InpEntrySlowMaPeriod = 13;             // Slow MA for entry trend
 input int    InpEntryRsiPeriod = 7;                 // RSI used to avoid exhausted entries
+input bool   InpFastScalpMode = true;               // Allow fast continuation scalps
+input double InpScalpMaxSpreadTpRatio = 0.35;       // Max spread as a ratio of scalp TP points
+input int    InpScalpMaxClosedTrades = 10;          // Pause after N closed scalp trades per window
+input int    InpScalpWindowSeconds = 900;           // Scalp burst accounting window
+input int    InpMaxConsecutiveLosses = 2;           // Pause after this many losing closes
+input int    InpLossPauseSeconds = 120;             // Pause all entries after a loss streak
+input int    InpLossSideCooldownSeconds = 180;      // Pause the stopped side after a loss
 input int    InpMinSecondsBetweenTrades = 5;        // Trade throttle to prevent duplicate entries
 input double InpMaxRecoveryLot = 0.05;              // Cap recovery lot; 0 disables
 input int    InpMaxSameSidePositions = 2;           // Max buy or sell positions per cycle; 0 disables
@@ -132,6 +139,13 @@ double         LastEntryTrendBodyPoints = 0.0;
 double         LastEntryTrendMaDeltaPoints = 0.0;
 double         LastEntryTrendRsi = 50.0;
 string         LastEntryTrendReason = "Not checked yet.";
+int            ConsecutiveLosses = 0;
+datetime       LastLossTime = 0;
+int            LastLossSide = 0;
+double         LastClosedProfit = 0.0;
+datetime       ScalpWindowStart = 0;
+int            ScalpClosedTrades = 0;
+string         LastScalpRiskReason = "Ready.";
 
 int OnInit() {
    trade.SetExpertMagicNumber(InpMagic);
@@ -170,6 +184,43 @@ void OnTick()
 void OnTimer()
 {
    RunEngine("timer");
+}
+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+{
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   ulong dealTicket = trans.deal;
+   if(dealTicket == 0 || !HistoryDealSelect(dealTicket))
+      return;
+
+   string dealSymbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+   if(dealSymbol != _Symbol)
+      return;
+
+   long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
+   if(magic != InpMagic)
+      return;
+
+   ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+   if(dealEntry != DEAL_ENTRY_OUT && dealEntry != DEAL_ENTRY_OUT_BY && dealEntry != DEAL_ENTRY_INOUT)
+      return;
+
+   ENUM_DEAL_TYPE dealType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+   int closedSide = 0;
+   if(dealType == DEAL_TYPE_BUY)
+      closedSide = -1;
+   else if(dealType == DEAL_TYPE_SELL)
+      closedSide = 1;
+
+   double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT) +
+                   HistoryDealGetDouble(dealTicket, DEAL_COMMISSION) +
+                   HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+
+   NoteClosedScalp(profit, closedSide);
 }
 
 void RunEngine(string eventSource)
@@ -288,6 +339,13 @@ void RunEngine(string eventSource)
          return; // DON'T start a new cycle during high spread!
       }
 
+      if(!ScalpSpreadAllowsEntry(spread))
+      {
+         DrawDashboard(spread);
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
       double modelScore = 0.0;
       if(!AiAllowsEntry(spread, modelScore))
       {
@@ -305,6 +363,14 @@ void RunEngine(string eventSource)
       ENUM_POSITION_TYPE entryType = POSITION_TYPE_BUY;
       if(!InitialEntrySignal(entryType, spread))
       {
+         DrawDashboard(spread);
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
+      if(!ScalpRiskAllowsEntry(entryType))
+      {
+         SetStatus(LastScalpRiskReason);
          DrawDashboard(spread);
          WriteDashboardStatus(spread, hasPosition, totalProfit);
          return;
@@ -777,6 +843,20 @@ int FastEntryTrendSignal(int spread)
                        LastEntryTrendRsi >= 22.0 &&
                        LastEntryTrendRsi <= 62.0;
 
+   bool scalpBuy = InpFastScalpMode &&
+                   LastEntryTrendMovePoints >= minMovePoints &&
+                   LastEntryTrendBodyPoints >= minBodyPoints &&
+                   latestClose > fastMa &&
+                   enoughBullishBars &&
+                   LastEntryTrendRsi <= 90.0;
+
+   bool scalpSell = InpFastScalpMode &&
+                    LastEntryTrendMovePoints <= -minMovePoints &&
+                    LastEntryTrendBodyPoints <= -minBodyPoints &&
+                    latestClose < fastMa &&
+                    enoughBearishBars &&
+                    LastEntryTrendRsi >= 22.0;
+
    LastEntryTrendReason = "move=" + DoubleToString(LastEntryTrendMovePoints, 1) +
                           " body=" + DoubleToString(LastEntryTrendBodyPoints, 1) +
                           " ma_delta=" + DoubleToString(LastEntryTrendMaDeltaPoints, 1) +
@@ -810,6 +890,20 @@ int FastEntryTrendSignal(int spread)
       return -1;
    }
 
+   if(scalpBuy && !scalpSell)
+   {
+      LastEntryTrendSignal = 1;
+      LastEntryTrendReason = "fast_scalp_buy " + LastEntryTrendReason;
+      return 1;
+   }
+
+   if(scalpSell && !scalpBuy)
+   {
+      LastEntryTrendSignal = -1;
+      LastEntryTrendReason = "fast_scalp_sell " + LastEntryTrendReason;
+      return -1;
+   }
+
    LastEntryTrendReason = "wait " + LastEntryTrendReason;
    return 0;
 }
@@ -823,6 +917,143 @@ string EntryTrendLabel()
       return "SELL";
 
    return "WAIT";
+}
+
+int PositionTypeSide(ENUM_POSITION_TYPE positionType)
+{
+   if(positionType == POSITION_TYPE_BUY)
+      return 1;
+
+   if(positionType == POSITION_TYPE_SELL)
+      return -1;
+
+   return 0;
+}
+
+string SideLabel(int side)
+{
+   if(side > 0)
+      return "BUY";
+
+   if(side < 0)
+      return "SELL";
+
+   return "NONE";
+}
+
+void RefreshScalpWindow()
+{
+   int windowSeconds = InpScalpWindowSeconds;
+   if(windowSeconds < 60)
+      windowSeconds = 60;
+
+   if(ScalpWindowStart == 0 || TimeCurrent() - ScalpWindowStart >= windowSeconds)
+   {
+      ScalpWindowStart = TimeCurrent();
+      ScalpClosedTrades = 0;
+   }
+}
+
+void NoteClosedScalp(double profit, int closedSide)
+{
+   RefreshScalpWindow();
+   ScalpClosedTrades++;
+   LastClosedProfit = profit;
+
+   if(profit < 0.0)
+   {
+      ConsecutiveLosses++;
+      LastLossTime = TimeCurrent();
+      LastLossSide = closedSide;
+      LastScalpRiskReason = "Loss noted on " + SideLabel(closedSide) +
+                            ". Streak=" + IntegerToString(ConsecutiveLosses) +
+                            " profit=" + DoubleToString(profit, 2);
+   }
+   else
+   {
+      ConsecutiveLosses = 0;
+      LastScalpRiskReason = "Win noted. Last profit=" + DoubleToString(profit, 2);
+   }
+}
+
+bool ScalpRiskAllowsEntry(ENUM_POSITION_TYPE entryType)
+{
+   RefreshScalpWindow();
+
+   int maxClosedTrades = InpScalpMaxClosedTrades;
+   if(maxClosedTrades > 0 && ScalpClosedTrades >= maxClosedTrades)
+   {
+      LastScalpRiskReason = "Scalp burst complete: " + IntegerToString(ScalpClosedTrades) +
+                            "/" + IntegerToString(maxClosedTrades) + " closed trades. Waiting for next window.";
+      return false;
+   }
+
+   datetime now = TimeCurrent();
+   int maxLosses = InpMaxConsecutiveLosses;
+   if(maxLosses < 1)
+      maxLosses = 1;
+
+   int lossPauseSeconds = InpLossPauseSeconds;
+   if(lossPauseSeconds < 0)
+      lossPauseSeconds = 0;
+
+   if(ConsecutiveLosses >= maxLosses && LastLossTime > 0 && now - LastLossTime < lossPauseSeconds)
+   {
+      int waitLeft = lossPauseSeconds - (int)(now - LastLossTime);
+      LastScalpRiskReason = "Paused after " + IntegerToString(ConsecutiveLosses) +
+                            " losses. Resume in " + IntegerToString(waitLeft) + "s.";
+      return false;
+   }
+
+   int sideCooldownSeconds = InpLossSideCooldownSeconds;
+   if(sideCooldownSeconds < 0)
+      sideCooldownSeconds = 0;
+
+   int entrySide = PositionTypeSide(entryType);
+   if(sideCooldownSeconds > 0 &&
+      LastLossTime > 0 &&
+      LastLossSide != 0 &&
+      entrySide == LastLossSide &&
+      now - LastLossTime < sideCooldownSeconds)
+   {
+      int waitLeft = sideCooldownSeconds - (int)(now - LastLossTime);
+      LastScalpRiskReason = SideLabel(entrySide) + " paused after stop loss. Try opposite signal or wait " +
+                            IntegerToString(waitLeft) + "s.";
+      return false;
+   }
+
+   LastScalpRiskReason = "Scalp risk OK.";
+   return true;
+}
+
+bool ScalpSpreadAllowsEntry(int spread)
+{
+   if(!InpFastScalpMode)
+      return true;
+
+   int takeProfitPoints = ActiveTakeProfitPoints();
+   if(takeProfitPoints <= 0)
+      return true;
+
+   double ratio = InpScalpMaxSpreadTpRatio;
+   if(ratio <= 0.0)
+      return true;
+
+   if(ratio > 1.0)
+      ratio = 1.0;
+
+   int scalpSpreadLimit = (int)MathFloor(takeProfitPoints * ratio);
+   if(scalpSpreadLimit < 1)
+      return true;
+
+   if(spread <= scalpSpreadLimit)
+      return true;
+
+   SetStatus("Waiting: spread too high for 0.50 scalp. Spread " +
+             IntegerToString(spread) + " > " + IntegerToString(scalpSpreadLimit) +
+             " scalp limit.");
+   LastScalpRiskReason = "Spread too high for 0.50 scalp.";
+   return false;
 }
 
 bool CanTradeNow()
@@ -1648,6 +1879,12 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "entry_trend_ma_delta_points=" + DoubleToString(LastEntryTrendMaDeltaPoints, 1) + "\n");
    FileWriteString(handle, "entry_trend_rsi=" + DoubleToString(LastEntryTrendRsi, 1) + "\n");
    FileWriteString(handle, "entry_trend_reason=" + LastEntryTrendReason + "\n");
+   FileWriteString(handle, "scalp_closed_trades=" + IntegerToString(ScalpClosedTrades) + "\n");
+   FileWriteString(handle, "scalp_max_closed_trades=" + IntegerToString(InpScalpMaxClosedTrades) + "\n");
+   FileWriteString(handle, "consecutive_losses=" + IntegerToString(ConsecutiveLosses) + "\n");
+   FileWriteString(handle, "last_closed_profit=" + DoubleToString(LastClosedProfit, 2) + "\n");
+   FileWriteString(handle, "last_loss_side=" + SideLabel(LastLossSide) + "\n");
+   FileWriteString(handle, "scalp_risk_reason=" + LastScalpRiskReason + "\n");
    FileWriteString(handle, "model_file_found=" + BoolFlag(ModelFileFound) + "\n");
    FileWriteString(handle, "model_enabled=" + BoolFlag(ModelGateEnabled) + "\n");
    FileWriteString(handle, "model_score=" + DoubleToString(LastModelScore, 4) + "\n");
@@ -1877,6 +2114,8 @@ void DrawDashboard(int spread) {
            "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2), "\n",
            "Recovery: ", ActiveAllowRecovery() ? "ON" : "OFF", " | TP/SL: ", ActiveTakeProfitPoints(), "/", ActiveStopLossPoints(), "\n",
            "Entry Trend: ", EntryTrendLabel(), " | ", LastEntryTrendReason, "\n",
+           "Scalps: ", ScalpClosedTrades, "/", InpScalpMaxClosedTrades,
+           " | Loss Streak: ", ConsecutiveLosses, "\n",
            "Max Lot: ", DoubleToString(ActiveMaxLot(), 2), " | Same Side Max: ", ActiveMaxSameSidePositions(), "\n",
            "AI Filter: ", modelStatus, " | Score: ", DoubleToString(LastModelScore, 3), "\n",
            "EA Message: ", LastStatus, "\n",

@@ -11,8 +11,8 @@ CYCLE_LOG_FILE_NAME = "recovery_shield_cycles.csv"
 MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
-APP_VERSION = "v1.0.5"
-EA_BUILD_NUMBER = "6"
+APP_VERSION = "v1.0.7"
+EA_BUILD_NUMBER = "8"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 
 DEFAULT_CONTROL = {
@@ -25,13 +25,13 @@ DEFAULT_CONTROL = {
     "quick_target_usd": "0.50",
     "max_loss_usd": "1.20",
     "allow_recovery": "0",
-    "take_profit_points": "900",
-    "stop_loss_points": "700",
+    "take_profit_points": "700",
+    "stop_loss_points": "250",
     "max_lot": "0.01",
     "max_same_side": "1",
     "min_same_side_distance": "1000",
     "max_turns": "1",
-    "max_spread": "400",
+    "max_spread": "200",
 }
 
 CONTROL_PRESETS = {
@@ -43,15 +43,15 @@ CONTROL_PRESETS = {
         "multiplier": "1",
         "target_usd": "0.50",
         "quick_target_usd": "0.20",
-        "max_loss_usd": "1.20",
+        "max_loss_usd": "0.60",
         "allow_recovery": "0",
-        "take_profit_points": "500",
-        "stop_loss_points": "700",
+        "take_profit_points": "700",
+        "stop_loss_points": "250",
         "max_lot": "0.01",
         "max_same_side": "1",
         "min_same_side_distance": "1000",
         "max_turns": "1",
-        "max_spread": "250",
+        "max_spread": "180",
     },
     "quick_now": {
         "enabled": "1",
@@ -61,15 +61,15 @@ CONTROL_PRESETS = {
         "multiplier": "1",
         "target_usd": "0.50",
         "quick_target_usd": "0.50",
-        "max_loss_usd": "1.20",
+        "max_loss_usd": "0.60",
         "allow_recovery": "0",
-        "take_profit_points": "900",
-        "stop_loss_points": "700",
+        "take_profit_points": "700",
+        "stop_loss_points": "250",
         "max_lot": "0.01",
         "max_same_side": "1",
         "min_same_side_distance": "1000",
         "max_turns": "1",
-        "max_spread": "400",
+        "max_spread": "200",
     },
 }
 

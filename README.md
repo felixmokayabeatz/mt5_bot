@@ -30,7 +30,9 @@ The EA can close baskets fast with `Quick target USD`, which is separate from th
 
 The recovery logic now also has guardrails:
 
-- `Allow recovery` is off by default in `v1.0.5_6`, so the bot takes one shot and lets TP/SL/loss cap handle the outcome.
+- `Allow recovery` is off by default in `v1.0.7_8`, so the bot takes one shot and lets TP/SL/loss cap handle the outcome.
+- `InpFastScalpMode` allows fast continuation scalps, but same-side entries cool down after a stop loss.
+- `InpScalpMaxSpreadTpRatio` blocks 0.50 scalps when spread is too large relative to the take-profit distance.
 - `InpUseTrendEntry` now uses fast M1 continuation and pullback entries instead of selling only because a slower MA is stale.
 - `Take profit points` and `Stop loss points` attach hard broker-side exits to each order when hard stops are enabled.
 - `InpMinSecondsBetweenTrades` prevents duplicate orders from tick/timer events.
@@ -39,6 +41,7 @@ The recovery logic now also has guardrails:
 - `Max lot` caps the recovery lot so a bad cycle cannot jump from small lots to oversized exposure.
 - `Max same side` limits how many buys or sells can stack in one basket.
 - `Min same-side distance` blocks another buy/sell if it is too close to an existing position of the same type.
+- `InpMaxConsecutiveLosses`, `InpLossPauseSeconds`, and `InpLossSideCooldownSeconds` pause the bot after stop-loss streaks.
 - `Max loss USD` is an optional dashboard emergency close. Keep it `0` to disable it.
 
 For aggressive demo scalping, use a small quick target such as `0.50` to `2.00`, a low initial lot, and a realistic max spread for the symbol.
@@ -69,7 +72,7 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.5` and the current EA build is `v1.0.5_6`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.5_6.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.7` and the current EA build is `v1.0.7_8`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_8.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 

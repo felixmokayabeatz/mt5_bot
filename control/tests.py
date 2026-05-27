@@ -58,8 +58,8 @@ class ServiceTests(SimpleTestCase):
         previous = os.environ.get("MT5_COMMON_FILES_DIR")
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
-            self.assertEqual(read_version()["app_version"], "v1.0.5")
-            self.assertEqual(read_version()["ea_version"], "v1.0.5_6")
+            self.assertEqual(read_version()["app_version"], "v1.0.7")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_8")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -70,7 +70,7 @@ class ServiceTests(SimpleTestCase):
         state = runtime_state(
             {"enabled": "1"},
             {"ea_message": "Waiting: spread is above the max allowed."},
-            {"ea_version": "v1.0.5_6"},
+            {"ea_version": "v1.0.7_8"},
         )
 
         self.assertEqual(state["badge_state"], "warning")
@@ -79,8 +79,8 @@ class ServiceTests(SimpleTestCase):
 
         confirmed = runtime_state(
             {"enabled": "1"},
-            {"ea_version": "v1.0.5_6"},
-            {"ea_version": "v1.0.5_6"},
+            {"ea_version": "v1.0.7_8"},
+            {"ea_version": "v1.0.7_8"},
         )
 
         self.assertEqual(confirmed["badge_state"], "confirmed")
@@ -91,8 +91,8 @@ class ServiceTests(SimpleTestCase):
 
         self.assertEqual(control["enabled"], "1")
         self.assertEqual(control["quick_target_usd"], "0.50")
-        self.assertEqual(control["max_loss_usd"], "1.20")
+        self.assertEqual(control["max_loss_usd"], "0.60")
         self.assertEqual(control["allow_recovery"], "0")
-        self.assertEqual(control["take_profit_points"], "900")
-        self.assertEqual(control["stop_loss_points"], "700")
-        self.assertEqual(control["max_spread"], "400")
+        self.assertEqual(control["take_profit_points"], "700")
+        self.assertEqual(control["stop_loss_points"], "250")
+        self.assertEqual(control["max_spread"], "200")
