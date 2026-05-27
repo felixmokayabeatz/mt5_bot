@@ -5,6 +5,7 @@ param(
   [string]$TerminalDataDir = "",
   [string]$MetaEditor = "",
   [string]$TargetSubdir = "RecoveryShield",
+  [switch]$NoLegacyMirror,
   [switch]$NoCompile,
   [switch]$Watch,
   [int]$DebounceMs = 700,
@@ -23,6 +24,7 @@ function Show-Usage {
   Write-Host "  .\build_ea.ps1"
   Write-Host "  .\build_ea.ps1 -Watch"
   Write-Host "  .\build_ea.ps1 -NoCompile"
+  Write-Host "  .\build_ea.ps1 -NoLegacyMirror"
   Write-Host "  .\build_ea.ps1 -ExpertsDir `"C:\Users\you\AppData\Roaming\MetaQuotes\Terminal\<id>\MQL5\Experts`""
   Write-Host ""
   Write-Host "Optional environment variables:"
@@ -267,6 +269,53 @@ function Publish-VersionedBuild([object]$VersionInfo, [string]$TargetSource, [st
   Write-Host "Archived EX5: $versionedCompiled"
 }
 
+function Copy-FileIfChanged([string]$SourcePath, [string]$DestinationPath, [string]$Label) {
+  $destinationDir = Split-Path -Parent $DestinationPath
+  New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+
+  $shouldCopy = $true
+  if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
+    $sourceHash = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash
+    $destinationHash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256).Hash
+    $shouldCopy = ($sourceHash -ne $destinationHash)
+  }
+
+  if (!$shouldCopy) {
+    Write-Host "$Label already up to date: $DestinationPath"
+    return
+  }
+
+  if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
+    try {
+      Copy-Item -LiteralPath $DestinationPath -Destination "$DestinationPath.bak" -Force
+    } catch {
+      Write-Host "Could not refresh backup file, continuing: $DestinationPath.bak"
+    }
+  }
+
+  Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+  Write-Host "$Label synced: $DestinationPath"
+}
+
+function Sync-LegacyExpertsRoot([string]$TargetSource, [string]$CompiledPath, [string]$TargetDirectory) {
+  $expertsRoot = Split-Path -Parent $TargetDirectory
+  if ([string]::IsNullOrWhiteSpace($expertsRoot)) {
+    return
+  }
+
+  $targetFull = [System.IO.Path]::GetFullPath($TargetDirectory).TrimEnd("\")
+  $expertsFull = [System.IO.Path]::GetFullPath($expertsRoot).TrimEnd("\")
+  if ($targetFull -eq $expertsFull) {
+    return
+  }
+
+  $legacySource = Join-Path $expertsRoot (Split-Path -Leaf $TargetSource)
+  $legacyCompiled = Join-Path $expertsRoot (Split-Path -Leaf $CompiledPath)
+
+  Copy-FileIfChanged $TargetSource $legacySource "Legacy root MQ5 mirror"
+  Copy-FileIfChanged $CompiledPath $legacyCompiled "Legacy root EX5 mirror"
+}
+
 function Invoke-MetaEditorCompile([string]$MetaEditorPath, [string]$TargetSource) {
   if ([string]::IsNullOrWhiteSpace($MetaEditorPath)) {
     throw "MetaEditor was not found. Set METAEDITOR_EXE or pass -MetaEditor."
@@ -342,6 +391,10 @@ function Invoke-EaBuild {
   $metaEditorPath = Find-MetaEditor $MetaEditor
   $compileResult = Invoke-MetaEditorCompile $metaEditorPath $targetSource
   Publish-VersionedBuild $versionInfo $targetSource $compileResult.CompiledPath $targetDir $compileResult.LogPath
+
+  if (!$NoLegacyMirror) {
+    Sync-LegacyExpertsRoot $targetSource $compileResult.CompiledPath $targetDir
+  }
 }
 
 if ($Help) {

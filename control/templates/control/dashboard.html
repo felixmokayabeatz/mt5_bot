@@ -13,15 +13,19 @@
       <div>
         <p class="eyebrow">MetaTrader 5 Demo Control</p>
         <h1>Recovery Shield</h1>
-        <p class="version-line">App <span id="app-version">{{ version.app_version|default:"v1.0.2" }}</span> | EA <span id="ea-version">{{ status.ea_version|default:version.ea_version|default:"v1.0.2_3" }}</span></p>
+        <p class="version-line">
+          App <span id="app-version">{{ version.app_version|default:"v1.0.2" }}</span>
+          | Live EA <span id="ea-version">{{ status.ea_version|default:"Waiting for EA" }}</span>
+          | Compiled <span id="compiled-header-version">{{ version.ea_version|default:"v1.0.2_3" }}</span>
+        </p>
       </div>
-      <div class="status-pill" data-enabled="{{ control.enabled }}">
-        {% if control.enabled == "1" %}Running{% else %}Paused{% endif %}
+      <div class="status-pill" data-enabled="{{ control.enabled }}" data-state="{{ runtime_state.badge_state }}">
+        {{ runtime_state.badge_label }}
       </div>
     </header>
 
-    <section class="version-alert" id="version-alert" hidden>
-      Compiled EA is <strong id="compiled-alert-version">{{ version.ea_version|default:"v1.0.2_3" }}</strong>, but the running EA is <strong id="running-alert-version">unknown</strong>. Reattach the EA or restart MT5.
+    <section class="version-alert" id="version-alert" {% if not runtime_state.version_mismatch %}hidden{% endif %}>
+      Compiled EA is <strong id="compiled-alert-version">{{ version.ea_version|default:"v1.0.2_3" }}</strong>, but the running EA is <strong id="running-alert-version">{{ runtime_state.running_version }}</strong>. Reattach the EA or restart MT5.
     </section>
 
     {% if messages %}
@@ -121,7 +125,7 @@
           </div>
           <div>
             <dt>EA version</dt>
-            <dd id="live-ea-version">{{ status.ea_version|default:version.ea_version|default:"v1.0.2_3" }}</dd>
+            <dd id="live-ea-version">{{ status.ea_version|default:"Waiting for EA" }}</dd>
           </div>
           <div>
             <dt>Compiled build</dt>
@@ -294,13 +298,16 @@
         const version = payload.version || {};
         const counts = payload.counts || {};
 
-        document.querySelector(".status-pill").textContent =
-          control.enabled === "1" ? "Running" : "Paused";
-        document.querySelector(".status-pill").dataset.enabled = control.enabled || "0";
+        const runtime = payload.runtime_state || {};
+        const statusPill = document.querySelector(".status-pill");
+        statusPill.textContent = runtime.badge_label || (control.enabled === "1" ? "Command On" : "Paused");
+        statusPill.dataset.enabled = control.enabled || "0";
+        statusPill.dataset.state = runtime.badge_state || (control.enabled === "1" ? "warning" : "paused");
 
         document.getElementById("ea-message").textContent = status.ea_message || "No EA status yet";
         document.getElementById("app-version").textContent = status.app_version || version.app_version || "v1.0.2";
-        document.getElementById("ea-version").textContent = status.ea_version || version.ea_version || "v1.0.2_3";
+        document.getElementById("ea-version").textContent = status.ea_version || "Waiting for EA";
+        document.getElementById("compiled-header-version").textContent = version.ea_version || "v1.0.2_3";
         document.getElementById("live-ea-version").textContent = status.ea_version || "Waiting for EA";
         document.getElementById("compiled-version").textContent = version.ea_version || "v1.0.2_3";
         const compiledVersion = version.ea_version || "v1.0.2_3";

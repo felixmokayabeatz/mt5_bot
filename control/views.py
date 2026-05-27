@@ -23,6 +23,7 @@ from .services import (
     read_status,
     read_version,
     runtime_paths,
+    runtime_state,
     status_file_path,
     validate_control,
     write_control,
@@ -71,13 +72,15 @@ def dashboard(request):
 
     debug_log("dashboard opened")
     status = read_status()
+    version = read_version()
     paths = runtime_paths()
     file_info = file_info_bundle(paths)
     context = {
         "control": control,
         "status": status,
         "model": read_model(),
-        "version": read_version(),
+        "version": version,
+        "runtime_state": runtime_state(control, status, version),
         **paths,
         **file_info,
         "event_rows": csv_data_row_count(event_log_file_path()),
@@ -89,6 +92,7 @@ def dashboard(request):
 def status_api(request):
     control = read_control()
     status = read_status()
+    version = read_version()
     paths = runtime_paths()
     file_info = file_info_bundle(paths)
     debug_log(
@@ -101,7 +105,8 @@ def status_api(request):
             "control": control,
             "status": status,
             "model": read_model(),
-            "version": read_version(),
+            "version": version,
+            "runtime_state": runtime_state(control, status, version),
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "paths": {key: str(value) for key, value in paths.items()},
             "files": {

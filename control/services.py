@@ -182,6 +182,42 @@ def read_version():
     return values
 
 
+def runtime_state(control, status, version):
+    command_enabled = control.get("enabled") == "1"
+    compiled_version = version.get("ea_version") or EA_VERSION
+    running_version = status.get("ea_version", "").strip()
+    status_seen = bool(status)
+    ea_confirmed = command_enabled and running_version == compiled_version
+    version_mismatch = running_version != compiled_version
+
+    if not command_enabled:
+        badge_label = "Paused"
+        badge_state = "paused"
+    elif ea_confirmed:
+        badge_label = "EA Confirmed"
+        badge_state = "confirmed"
+    elif running_version:
+        badge_label = "Version Mismatch"
+        badge_state = "warning"
+    elif status_seen:
+        badge_label = "Old EA / Unknown"
+        badge_state = "warning"
+    else:
+        badge_label = "No EA Status"
+        badge_state = "warning"
+
+    return {
+        "command_enabled": command_enabled,
+        "compiled_version": compiled_version,
+        "running_version": running_version or "unknown / old EA",
+        "status_seen": status_seen,
+        "ea_confirmed": ea_confirmed,
+        "version_mismatch": version_mismatch,
+        "badge_label": badge_label,
+        "badge_state": badge_state,
+    }
+
+
 def csv_data_row_count(path):
     if not path.exists():
         return 0

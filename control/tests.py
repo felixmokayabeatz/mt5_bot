@@ -3,7 +3,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from .services import common_files_dir, read_version, validate_control
+from .services import common_files_dir, read_version, runtime_state, validate_control
 
 
 class ServiceTests(SimpleTestCase):
@@ -59,3 +59,23 @@ class ServiceTests(SimpleTestCase):
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
             else:
                 os.environ["MT5_COMMON_FILES_DIR"] = previous
+
+    def test_runtime_state_requires_matching_live_ea_version(self):
+        state = runtime_state(
+            {"enabled": "1"},
+            {"ea_message": "Waiting: spread is above the max allowed."},
+            {"ea_version": "v1.0.2_3"},
+        )
+
+        self.assertEqual(state["badge_state"], "warning")
+        self.assertEqual(state["badge_label"], "Old EA / Unknown")
+        self.assertFalse(state["ea_confirmed"])
+
+        confirmed = runtime_state(
+            {"enabled": "1"},
+            {"ea_version": "v1.0.2_3"},
+            {"ea_version": "v1.0.2_3"},
+        )
+
+        self.assertEqual(confirmed["badge_state"], "confirmed")
+        self.assertTrue(confirmed["ea_confirmed"])
