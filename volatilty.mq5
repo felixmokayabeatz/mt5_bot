@@ -6,9 +6,9 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
-#define EA_APP_VERSION "v1.0.2"
-#define EA_BUILD_NUMBER 3
-#define EA_BUILD_VERSION "v1.0.2_3"
+#define EA_APP_VERSION "v1.0.3"
+#define EA_BUILD_NUMBER 4
+#define EA_BUILD_VERSION "v1.0.3_4"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
@@ -35,6 +35,13 @@ input int    InpStopLossPoints = 900;               // Per-position SL in points
 input bool   InpUseTrendEntry = true;               // Start in MA trend direction
 input bool   InpBlockCounterTrendRecovery = true;   // Do not add recovery trades against strong MA trend
 input int    InpTrendFilterPoints = 50;             // MA delta needed to call trend strong
+input ENUM_TIMEFRAMES InpEntryTrendTimeframe = PERIOD_M1; // Fast entry trend timeframe
+input int    InpEntryTrendLookbackBars = 3;         // Closed bars used for fast entry direction
+input int    InpEntryMinMovePoints = 80;            // Minimum fast move before opening a trend trade
+input int    InpEntryMinBodyPoints = 10;            // Minimum latest closed candle body
+input int    InpEntryFastMaPeriod = 5;              // Fast MA for entry trend
+input int    InpEntrySlowMaPeriod = 13;             // Slow MA for entry trend
+input int    InpEntryRsiPeriod = 7;                 // RSI used to avoid exhausted entries
 input int    InpMinSecondsBetweenTrades = 5;        // Trade throttle to prevent duplicate entries
 input double InpMaxRecoveryLot = 0.05;              // Cap recovery lot; 0 disables
 input int    InpMaxSameSidePositions = 2;           // Max buy or sell positions per cycle; 0 disables
@@ -119,6 +126,12 @@ double         CachedAtrPoints = 0.0;
 double         CachedRangePoints = 0.0;
 double         CachedMaDeltaPoints = 0.0;
 double         CachedRsi14 = 50.0;
+int            LastEntryTrendSignal = 0;
+double         LastEntryTrendMovePoints = 0.0;
+double         LastEntryTrendBodyPoints = 0.0;
+double         LastEntryTrendMaDeltaPoints = 0.0;
+double         LastEntryTrendRsi = 50.0;
+string         LastEntryTrendReason = "Not checked yet.";
 
 int OnInit() {
    trade.SetExpertMagicNumber(InpMagic);
@@ -289,7 +302,14 @@ void RunEngine(string eventSource)
          return;
       }
 
-      ENUM_POSITION_TYPE entryType = InitialEntryType();
+      ENUM_POSITION_TYPE entryType = POSITION_TYPE_BUY;
+      if(!InitialEntrySignal(entryType, spread))
+      {
+         DrawDashboard(spread);
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
       double entryLot = NormalizeVolume(ActiveInitialLot());
       double stopLoss = 0.0;
       double takeProfit = 0.0;
@@ -314,7 +334,9 @@ void RunEngine(string eventSource)
             AppendEvent(entryType == POSITION_TYPE_SELL ? "TRADE_SELL" : "TRADE_BUY",
                         spread,
                         CurrentManagedProfit(),
-                        "initial_lot=" + DoubleToString(entryLot, 2));
+                        "initial_lot=" + DoubleToString(entryLot, 2) +
+                        " trend=" + EntryTrendLabel() +
+                        " reason=" + LastEntryTrendReason);
          }
          else
          {
@@ -605,20 +627,171 @@ void BuildOrderStops(ENUM_POSITION_TYPE entryType, double entryPrice, double &st
    }
 }
 
-ENUM_POSITION_TYPE InitialEntryType()
+bool InitialEntrySignal(ENUM_POSITION_TYPE &entryType, int spread)
 {
    if(!InpUseTrendEntry)
-      return POSITION_TYPE_BUY;
+   {
+      entryType = POSITION_TYPE_BUY;
+      LastEntryTrendSignal = 1;
+      LastEntryTrendReason = "Trend entry disabled; default BUY.";
+      return true;
+   }
 
-   RefreshFeatureCache(false);
-   int trendPoints = InpTrendFilterPoints;
-   if(trendPoints < 1)
-      trendPoints = 1;
+   int signal = FastEntryTrendSignal(spread);
+   if(signal > 0)
+   {
+      entryType = POSITION_TYPE_BUY;
+      return true;
+   }
 
-   if(CachedMaDeltaPoints <= -trendPoints)
-      return POSITION_TYPE_SELL;
+   if(signal < 0)
+   {
+      entryType = POSITION_TYPE_SELL;
+      return true;
+   }
 
-   return POSITION_TYPE_BUY;
+   SetStatus("Waiting: no fast trend confirmation. " + LastEntryTrendReason);
+   return false;
+}
+
+int FastEntryTrendSignal(int spread)
+{
+   LastEntryTrendSignal = 0;
+   LastEntryTrendMovePoints = 0.0;
+   LastEntryTrendBodyPoints = 0.0;
+   LastEntryTrendMaDeltaPoints = 0.0;
+   LastEntryTrendRsi = 50.0;
+   LastEntryTrendReason = "Not checked yet.";
+
+   if(_Point <= 0.0)
+   {
+      LastEntryTrendReason = "Symbol point size unavailable.";
+      return 0;
+   }
+
+   ENUM_TIMEFRAMES timeframe = InpEntryTrendTimeframe;
+   int lookbackBars = InpEntryTrendLookbackBars;
+   if(lookbackBars < 2)
+      lookbackBars = 2;
+
+   int barsAvailable = Bars(_Symbol, timeframe);
+   if(barsAvailable < lookbackBars + 20)
+   {
+      LastEntryTrendReason = "Waiting for enough fast timeframe bars.";
+      return 0;
+   }
+
+   double latestClose = iClose(_Symbol, timeframe, 1);
+   double lookbackClose = iClose(_Symbol, timeframe, lookbackBars + 1);
+   double latestOpen = iOpen(_Symbol, timeframe, 1);
+
+   if(latestClose <= 0.0 || lookbackClose <= 0.0 || latestOpen <= 0.0)
+   {
+      LastEntryTrendReason = "Fast timeframe price data unavailable.";
+      return 0;
+   }
+
+   LastEntryTrendMovePoints = (latestClose - lookbackClose) / _Point;
+   LastEntryTrendBodyPoints = (latestClose - latestOpen) / _Point;
+
+   int bullishBars = 0;
+   int bearishBars = 0;
+   bool risingCloses = true;
+   bool fallingCloses = true;
+
+   for(int shift = 1; shift <= lookbackBars; shift++)
+   {
+      double closeNow = iClose(_Symbol, timeframe, shift);
+      double closePrevious = iClose(_Symbol, timeframe, shift + 1);
+      double openNow = iOpen(_Symbol, timeframe, shift);
+
+      if(closeNow <= 0.0 || closePrevious <= 0.0 || openNow <= 0.0)
+      {
+         LastEntryTrendReason = "Fast trend candles unavailable.";
+         return 0;
+      }
+
+      if(closeNow > openNow)
+         bullishBars++;
+      else if(closeNow < openNow)
+         bearishBars++;
+
+      if(closeNow <= closePrevious)
+         risingCloses = false;
+
+      if(closeNow >= closePrevious)
+         fallingCloses = false;
+   }
+
+   double fastMa = SimpleMaOnTimeframe(timeframe, InpEntryFastMaPeriod);
+   double slowMa = SimpleMaOnTimeframe(timeframe, InpEntrySlowMaPeriod);
+   if(fastMa <= 0.0 || slowMa <= 0.0)
+   {
+      LastEntryTrendReason = "Fast trend moving averages unavailable.";
+      return 0;
+   }
+
+   LastEntryTrendMaDeltaPoints = (fastMa - slowMa) / _Point;
+   LastEntryTrendRsi = CalculateRsiOnTimeframe(timeframe, InpEntryRsiPeriod);
+
+   double minMovePoints = (double)InpEntryMinMovePoints;
+   if(minMovePoints < 1.0)
+      minMovePoints = 1.0;
+
+   double spreadAdjustedMove = (double)spread * 0.20;
+   if(spreadAdjustedMove > minMovePoints)
+      minMovePoints = spreadAdjustedMove;
+
+   double minBodyPoints = (double)InpEntryMinBodyPoints;
+   if(minBodyPoints < 0.0)
+      minBodyPoints = 0.0;
+
+   bool enoughBullishBars = (bullishBars >= MathMax(1, lookbackBars - 1));
+   bool enoughBearishBars = (bearishBars >= MathMax(1, lookbackBars - 1));
+
+   bool buySignal = LastEntryTrendMovePoints >= minMovePoints &&
+                    LastEntryTrendBodyPoints >= minBodyPoints &&
+                    LastEntryTrendMaDeltaPoints > 0.0 &&
+                    latestClose > fastMa &&
+                    (risingCloses || enoughBullishBars) &&
+                    LastEntryTrendRsi < 82.0;
+
+   bool sellSignal = LastEntryTrendMovePoints <= -minMovePoints &&
+                     LastEntryTrendBodyPoints <= -minBodyPoints &&
+                     LastEntryTrendMaDeltaPoints < 0.0 &&
+                     latestClose < fastMa &&
+                     (fallingCloses || enoughBearishBars) &&
+                     LastEntryTrendRsi > 18.0;
+
+   LastEntryTrendReason = "move=" + DoubleToString(LastEntryTrendMovePoints, 1) +
+                          " body=" + DoubleToString(LastEntryTrendBodyPoints, 1) +
+                          " ma_delta=" + DoubleToString(LastEntryTrendMaDeltaPoints, 1) +
+                          " rsi=" + DoubleToString(LastEntryTrendRsi, 1);
+
+   if(buySignal && !sellSignal)
+   {
+      LastEntryTrendSignal = 1;
+      return 1;
+   }
+
+   if(sellSignal && !buySignal)
+   {
+      LastEntryTrendSignal = -1;
+      return -1;
+   }
+
+   return 0;
+}
+
+string EntryTrendLabel()
+{
+   if(LastEntryTrendSignal > 0)
+      return "BUY";
+
+   if(LastEntryTrendSignal < 0)
+      return "SELL";
+
+   return "WAIT";
 }
 
 bool CanTradeNow()
@@ -1066,6 +1239,69 @@ double SimpleMa(int period)
    return total / counted;
 }
 
+double SimpleMaOnTimeframe(ENUM_TIMEFRAMES timeframe, int period)
+{
+   if(period <= 0)
+      return 0.0;
+
+   double total = 0.0;
+   int counted = 0;
+
+   for(int shift = 1; shift <= period; shift++)
+   {
+      double closePrice = iClose(_Symbol, timeframe, shift);
+      if(closePrice <= 0.0)
+         continue;
+
+      total += closePrice;
+      counted++;
+   }
+
+   if(counted == 0)
+      return 0.0;
+
+   return total / counted;
+}
+
+double CalculateRsiOnTimeframe(ENUM_TIMEFRAMES timeframe, int period)
+{
+   if(period <= 0)
+      return 50.0;
+
+   double gains = 0.0;
+   double losses = 0.0;
+   int counted = 0;
+
+   for(int shift = 1; shift <= period; shift++)
+   {
+      double closeNow = iClose(_Symbol, timeframe, shift);
+      double closePrevious = iClose(_Symbol, timeframe, shift + 1);
+
+      if(closeNow <= 0.0 || closePrevious <= 0.0)
+         continue;
+
+      double change = closeNow - closePrevious;
+      if(change >= 0.0)
+         gains += change;
+      else
+         losses += MathAbs(change);
+
+      counted++;
+   }
+
+   if(counted == 0)
+      return 50.0;
+
+   double averageGain = gains / counted;
+   double averageLoss = losses / counted;
+
+   if(averageLoss <= 0.0)
+      return 100.0;
+
+   double rs = averageGain / averageLoss;
+   return 100.0 - (100.0 / (1.0 + rs));
+}
+
 double CalculateRsi(int period)
 {
    if(period <= 0)
@@ -1375,6 +1611,12 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "lower_level=" + DoubleToString(LowerLevel, _Digits) + "\n");
    FileWriteString(handle, "cycle_id=" + CycleId + "\n");
    FileWriteString(handle, "cycle_worst_profit=" + DoubleToString(CycleWorstProfit, 2) + "\n");
+   FileWriteString(handle, "entry_trend_signal=" + EntryTrendLabel() + "\n");
+   FileWriteString(handle, "entry_trend_move_points=" + DoubleToString(LastEntryTrendMovePoints, 1) + "\n");
+   FileWriteString(handle, "entry_trend_body_points=" + DoubleToString(LastEntryTrendBodyPoints, 1) + "\n");
+   FileWriteString(handle, "entry_trend_ma_delta_points=" + DoubleToString(LastEntryTrendMaDeltaPoints, 1) + "\n");
+   FileWriteString(handle, "entry_trend_rsi=" + DoubleToString(LastEntryTrendRsi, 1) + "\n");
+   FileWriteString(handle, "entry_trend_reason=" + LastEntryTrendReason + "\n");
    FileWriteString(handle, "model_file_found=" + BoolFlag(ModelFileFound) + "\n");
    FileWriteString(handle, "model_enabled=" + BoolFlag(ModelGateEnabled) + "\n");
    FileWriteString(handle, "model_score=" + DoubleToString(LastModelScore, 4) + "\n");
@@ -1603,6 +1845,7 @@ void DrawDashboard(int spread) {
            "Dashboard: ", dashboard, "\n",
            "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2), "\n",
            "Recovery: ", ActiveAllowRecovery() ? "ON" : "OFF", " | TP/SL: ", ActiveTakeProfitPoints(), "/", ActiveStopLossPoints(), "\n",
+           "Entry Trend: ", EntryTrendLabel(), " | ", LastEntryTrendReason, "\n",
            "Max Lot: ", DoubleToString(ActiveMaxLot(), 2), " | Same Side Max: ", ActiveMaxSameSidePositions(), "\n",
            "AI Filter: ", modelStatus, " | Score: ", DoubleToString(LastModelScore, 3), "\n",
            "EA Message: ", LastStatus, "\n",
