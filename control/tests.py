@@ -3,7 +3,13 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from .services import common_files_dir, read_version, runtime_state, validate_control
+from .services import (
+    apply_control_preset,
+    common_files_dir,
+    read_version,
+    runtime_state,
+    validate_control,
+)
 
 
 class ServiceTests(SimpleTestCase):
@@ -79,3 +85,12 @@ class ServiceTests(SimpleTestCase):
 
         self.assertEqual(confirmed["badge_state"], "confirmed")
         self.assertTrue(confirmed["ea_confirmed"])
+
+    def test_quick_now_preset_opens_spread_gate_for_current_test_spread(self):
+        control = apply_control_preset({"max_spread": "100"}, "quick_now")
+
+        self.assertEqual(control["enabled"], "1")
+        self.assertEqual(control["quick_target_usd"], "0.50")
+        self.assertEqual(control["max_loss_usd"], "1.20")
+        self.assertEqual(control["allow_recovery"], "0")
+        self.assertEqual(control["max_spread"], "400")

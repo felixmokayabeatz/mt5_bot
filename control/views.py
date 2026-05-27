@@ -9,6 +9,7 @@ from django.shortcuts import redirect, render
 
 from .services import (
     SettingsError,
+    apply_control_preset,
     common_files_dir,
     control_file_path,
     csv_data_row_count,
@@ -43,6 +44,15 @@ def dashboard(request):
                 messages.success(request, "Model training finished. Check the AI panel.")
             else:
                 messages.error(request, "Model training failed. Check the terminal output.")
+            return redirect("dashboard")
+
+        if action in {"quick_safe", "quick_now"}:
+            control = apply_control_preset(control, action)
+            write_control(control)
+            if action == "quick_now":
+                messages.warning(request, "Quick Now preset applied.")
+            else:
+                messages.success(request, "Safe Quick preset applied.")
             return redirect("dashboard")
 
         try:

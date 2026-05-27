@@ -37,6 +37,7 @@ body {
 .topbar,
 .layout,
 .command-row,
+.preset-row,
 .settings-grid,
 .metrics {
   display: grid;
@@ -156,6 +157,11 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.preset-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
 .btn {
   min-height: 44px;
   border: 0;
@@ -209,6 +215,22 @@ h2 {
 
 .btn.train:hover {
   background: #6d28d9;
+}
+
+.btn.preset {
+  background: #0f766e;
+}
+
+.btn.preset:hover {
+  background: #115e59;
+}
+
+.btn.preset.secondary {
+  background: #475569;
+}
+
+.btn.preset.secondary:hover {
+  background: #334155;
 }
 
 .ai-panel {
@@ -333,6 +355,7 @@ code {
   .topbar,
   .layout,
   .command-row,
+  .preset-row,
   .settings-grid {
     grid-template-columns: 1fr;
   }

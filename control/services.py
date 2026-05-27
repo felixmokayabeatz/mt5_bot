@@ -34,6 +34,45 @@ DEFAULT_CONTROL = {
     "max_spread": "500",
 }
 
+CONTROL_PRESETS = {
+    "quick_safe": {
+        "enabled": "1",
+        "close_all": "0",
+        "initial_lot": "0.01",
+        "zone_height": "1000",
+        "multiplier": "1",
+        "target_usd": "0.50",
+        "quick_target_usd": "0.20",
+        "max_loss_usd": "1.20",
+        "allow_recovery": "0",
+        "take_profit_points": "250",
+        "stop_loss_points": "700",
+        "max_lot": "0.01",
+        "max_same_side": "1",
+        "min_same_side_distance": "1000",
+        "max_turns": "1",
+        "max_spread": "250",
+    },
+    "quick_now": {
+        "enabled": "1",
+        "close_all": "0",
+        "initial_lot": "0.01",
+        "zone_height": "1000",
+        "multiplier": "1",
+        "target_usd": "0.50",
+        "quick_target_usd": "0.50",
+        "max_loss_usd": "1.20",
+        "allow_recovery": "0",
+        "take_profit_points": "350",
+        "stop_loss_points": "700",
+        "max_lot": "0.01",
+        "max_same_side": "1",
+        "min_same_side_distance": "1000",
+        "max_turns": "1",
+        "max_spread": "400",
+    },
+}
+
 
 class SettingsError(ValueError):
     pass
@@ -260,6 +299,15 @@ def write_control(values):
         f"path={target} enabled={clean['enabled']} close_all={clean['close_all']} "
         f"lot={clean['initial_lot']} max_spread={clean['max_spread']}"
     )
+    return clean
+
+
+def apply_control_preset(values, preset_name):
+    if preset_name not in CONTROL_PRESETS:
+        raise SettingsError("Unknown control preset.")
+
+    clean = values.copy()
+    clean.update(CONTROL_PRESETS[preset_name])
     return clean
 
 
