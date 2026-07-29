@@ -12,7 +12,7 @@ MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
 APP_VERSION = "v1.0.7"
-EA_BUILD_NUMBER = "10"
+EA_BUILD_NUMBER = "11"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 
 DEFAULT_CONTROL = {
@@ -21,9 +21,9 @@ DEFAULT_CONTROL = {
     "initial_lot": "0.01",
     "zone_height": "500",
     "multiplier": "1",
-    "target_usd": "0.50",
-    "quick_target_usd": "0.25",
-    "max_loss_usd": "3.00",
+    "target_usd": "1.00",
+    "quick_target_usd": "0.75",
+    "max_loss_usd": "1.10",
     "allow_recovery": "0",
     "take_profit_points": "200",
     "stop_loss_points": "300",
@@ -41,9 +41,9 @@ CONTROL_PRESETS = {
         "initial_lot": "0.01",
         "zone_height": "500",
         "multiplier": "1",
-        "target_usd": "0.50",
-        "quick_target_usd": "0.20",
-        "max_loss_usd": "1.00",
+        "target_usd": "1.00",
+        "quick_target_usd": "0.60",
+        "max_loss_usd": "0.90",
         "allow_recovery": "0",
         "take_profit_points": "250",
         "stop_loss_points": "250",
@@ -59,9 +59,9 @@ CONTROL_PRESETS = {
         "initial_lot": "0.01",
         "zone_height": "500",
         "multiplier": "1",
-        "target_usd": "0.40",
-        "quick_target_usd": "0.15",
-        "max_loss_usd": "2.00",
+        "target_usd": "1.20",
+        "quick_target_usd": "0.75",
+        "max_loss_usd": "1.10",
         "allow_recovery": "0",
         "take_profit_points": "150",
         "stop_loss_points": "250",

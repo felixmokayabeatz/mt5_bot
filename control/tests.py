@@ -59,7 +59,7 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(read_version()["app_version"], "v1.0.7")
-            self.assertEqual(read_version()["ea_version"], "v1.0.7_10")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_11")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -90,8 +90,8 @@ class ServiceTests(SimpleTestCase):
         control = apply_control_preset({"max_spread": "100"}, "quick_now")
 
         self.assertEqual(control["enabled"], "1")
-        self.assertEqual(control["quick_target_usd"], "0.15")
-        self.assertEqual(control["max_loss_usd"], "2.00")
+        self.assertEqual(control["quick_target_usd"], "0.75")
+        self.assertEqual(control["max_loss_usd"], "1.10")
         self.assertEqual(control["allow_recovery"], "0")
         self.assertEqual(control["take_profit_points"], "150")
         self.assertEqual(control["stop_loss_points"], "250")

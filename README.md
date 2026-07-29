@@ -39,7 +39,7 @@ second. The dashboard polls its status endpoint every 750 ms.
 
 ## Ultra open mode
 
-`InpUltraOpenMode` is on by default in `v1.0.7_10`. The strict continuation, pullback, and
+`InpUltraOpenMode` is on by default in `v1.0.7_11`. The strict continuation, pullback, and
 scalp patterns are still tried first; when they disagree the EA falls back to a much
 looser call that takes any small confirmed push (`InpUltraMinMovePoints`,
 `InpUltraMinBodyPoints`) as long as RSI is not at an extreme. Spread inflates the required
@@ -65,7 +65,7 @@ Three independent exits now take money off the table:
 
 ## Gold only
 
-`InpRestrictToGold` is on by default in `v1.0.7_10`. `OnInit` returns `INIT_FAILED` on any
+`InpRestrictToGold` is on by default in `v1.0.7_11`. `OnInit` returns `INIT_FAILED` on any
 chart whose symbol does not contain a fragment from `InpGoldSymbols` (`XAU,GOLD`), which
 covers `XAUUSD`, `XAUUSD.m`, `GOLD`, and `GOLDmicro`. Add your broker's spelling to that
 list, or set `InpRestrictToGold=false` to trade anything again.
@@ -77,6 +77,11 @@ TP/SL fits only one of them. `InpUseAtrStops` (default on) sizes both from ATR i
 reward-to-risk starts at 1:1 and the dashboard shows the resolved point values live.
 Set `InpUseAtrStops=false` to go back to the fixed `InpTakeProfitPoints` / `InpStopLossPoints`.
 
+That ATR is read from `InpEntryTrendTimeframe` (M1), not from the chart timeframe. Sizing M1
+scalps off an H1 or D1 ATR produced an 11,000 point value that saturated the clamp and pinned
+both TP and SL to the 3000 point ceiling, which silently ignored the dashboard TP/SL entirely.
+The dashboard reports `entry_atr_points` so the number driving the stops is visible.
+
 ## Cent accounts
 
 Cent accounts report profit in cents, so a `0.25` target would otherwise mean a quarter of
@@ -87,6 +92,26 @@ means real USD on both account types. `InpMoneyScaleOverride` forces the multipl
 broker uses a currency code the auto-detection misses. The dashboard shows the detected
 currency and multiplier, and lot sizes are unaffected since `NormalizeVolume` already
 follows the broker's own min/step/max.
+
+## Spread economics
+
+Spread is a fixed cost paid on every entry, and it decides whether a target is reachable at
+all. On `XAUUSDm` at 240 points of spread, a `0.15` quick target is 150 points on `0.01`
+lots — the spread is 1.6x the entire profit target, so the trade is behind before it starts.
+`v1.0.7_11` makes this structural rather than a setting you have to get right by hand:
+
+- `InpScaleTargetsToSpread` raises a too-small quick target until it is at least
+  `InpTargetSpreadMultiple` (`3.0`) times the current spread. The dashboard shows both the
+  requested and the effective target.
+- `InpMaxLossToTargetRatio` (`1.5`) caps the loss stop relative to that effective target, so
+  a `0.75` target cannot sit behind a `2.00` loss cap. Wins and losses stay the same order of
+  magnitude, which is what decides the break-even win rate.
+- `InpScalpMaxSpreadTpRatio` now measures spread against the distance the trade *actually*
+  travels before closing (usually the quick target), not the broker take profit that rarely
+  fires. Before this it compared against a 3000 point TP and passed everything.
+
+The break-even win rate is `avg_loss / (avg_loss + avg_win)`. At `+0.26` versus `-1.41` that
+is 84.6%; at `+0.75` versus `-1.10` it is 59.5%.
 
 ## Backtesting
 
@@ -109,7 +134,7 @@ The EA can close baskets fast with `Quick target USD`, which is separate from th
 
 The recovery logic now also has guardrails:
 
-- `Allow recovery` is off by default in `v1.0.7_10`, so the bot takes one shot and lets TP/SL/loss cap handle the outcome.
+- `Allow recovery` is off by default in `v1.0.7_11`, so the bot takes one shot and lets TP/SL/loss cap handle the outcome.
 - `InpFastScalpMode` allows fast continuation scalps, but same-side entries cool down after a stop loss.
 - `InpScalpMaxSpreadTpRatio` blocks 0.50 scalps when spread is too large relative to the take-profit distance.
 - `InpUseTrendEntry` now uses fast M1 continuation and pullback entries instead of selling only because a slower MA is stale.
@@ -121,7 +146,7 @@ The recovery logic now also has guardrails:
 - `Max same side` limits how many buys or sells can stack in one basket.
 - `Min same-side distance` blocks another buy/sell if it is too close to an existing position of the same type.
 - `InpMaxConsecutiveLosses`, `InpLossPauseSeconds`, and `InpLossSideCooldownSeconds` pause the bot after stop-loss streaks.
-- `Max loss USD` is an optional dashboard emergency close. Keep it `0` to disable it. (Before `v1.0.7_10` a dashboard `0` silently fell back to the EA input instead of disabling.)
+- `Max loss USD` is an optional dashboard emergency close. Keep it `0` to disable it. (Before `v1.0.7_11` a dashboard `0` silently fell back to the EA input instead of disabling.)
 
 For aggressive demo scalping, use a small quick target such as `0.50` to `2.00`, a low initial lot, and a realistic max spread for the symbol.
 
@@ -151,7 +176,7 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.7` and the current EA build is `v1.0.7_10`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_10.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.7` and the current EA build is `v1.0.7_11`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_11.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 

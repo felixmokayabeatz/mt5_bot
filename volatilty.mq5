@@ -7,8 +7,8 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 10
-#define EA_BUILD_VERSION "v1.0.7_10"
+#define EA_BUILD_NUMBER 11
+#define EA_BUILD_VERSION "v1.0.7_11"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
@@ -36,6 +36,11 @@ input double InpMaxFloatingLossUSD = 3.0;           // Emergency basket loss cap
 input bool   InpUseProfitLock = true;               // Close a winner that starts giving profit back
 input double InpProfitLockTriggerUSD = 0.15;        // Arm the lock once basket profit passes this
 input double InpProfitLockGiveBackUSD = 0.08;       // Close if profit drops this far below its peak
+
+input group "Spread Economics"
+input bool   InpScaleTargetsToSpread = true;        // Raise tiny targets until they clear the spread
+input double InpTargetSpreadMultiple = 3.0;         // Profit target must be at least spread x this
+input double InpMaxLossToTargetRatio = 1.5;         // Cap the loss stop at target x this
 input bool   InpUseTrailingStop = true;             // Move broker stops as price runs in our favour
 input int    InpBreakEvenPoints = 60;               // Profit points before the stop moves to entry
 input int    InpBreakEvenLockPoints = 10;           // Points locked in at break even
@@ -160,6 +165,7 @@ string         ModelReason = "No model loaded yet.";
 datetime       LastModelRead = 0;
 datetime       LastModelBlockLog = 0;
 int            AtrHandle = INVALID_HANDLE;
+int            AtrEntryHandle = INVALID_HANDLE;
 int            FastMaHandle = INVALID_HANDLE;
 int            SlowMaHandle = INVALID_HANDLE;
 int            RsiHandle = INVALID_HANDLE;
@@ -201,6 +207,7 @@ int OnInit() {
    trade.SetDeviationInPoints(InpTradeDeviationPoints);
    trade.SetAsyncMode(false);
    AtrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
+   AtrEntryHandle = iATR(_Symbol, InpEntryTrendTimeframe, 14);
    FastMaHandle = iMA(_Symbol, PERIOD_CURRENT, 10, 0, MODE_SMA, PRICE_CLOSE);
    SlowMaHandle = iMA(_Symbol, PERIOD_CURRENT, 30, 0, MODE_SMA, PRICE_CLOSE);
    RsiHandle = iRSI(_Symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
@@ -224,6 +231,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    ReleaseIndicator(AtrHandle);
+   ReleaseIndicator(AtrEntryHandle);
    ReleaseIndicator(FastMaHandle);
    ReleaseIndicator(SlowMaHandle);
    ReleaseIndicator(RsiHandle);
@@ -292,6 +300,95 @@ double ScaledMoney(double usdAmount)
    return(usdAmount * AccountMoneyScale);
 }
 
+//--- Money and points are not interchangeable across symbols and lot
+//--- sizes, so convert explicitly before comparing a USD target to spread.
+double PointValuePerLot()
+{
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
+   if(tickValue <= 0.0 || tickSize <= 0.0 || _Point <= 0.0)
+      return 0.0;
+
+   return tickValue * (_Point / tickSize);
+}
+
+double MoneyToPoints(double money, double volume)
+{
+   double perPoint = PointValuePerLot() * volume;
+
+   if(perPoint <= 0.0 || money <= 0.0)
+      return 0.0;
+
+   return money / perPoint;
+}
+
+double PointsToMoney(double points, double volume)
+{
+   return points * PointValuePerLot() * volume;
+}
+
+//--- Spread is paid on every entry. A target smaller than the spread can
+//--- never win often enough, so raise it until it clears the cost.
+double EffectiveQuickTargetUSD()
+{
+   double target = ActiveQuickTargetUSD();
+
+   if(!InpScaleTargetsToSpread || InpTargetSpreadMultiple <= 0.0)
+      return target;
+
+   int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(spread <= 0)
+      return target;
+
+   double volume = NormalizeVolume(ActiveInitialLot());
+   double floorMoney = PointsToMoney(spread * InpTargetSpreadMultiple, volume);
+
+   if(floorMoney > target)
+      return floorMoney;
+
+   return target;
+}
+
+//--- Keep the downside proportional to the upside. Without this a 0.15
+//--- target sat behind a 2.00 loss cap, which needs a 93% win rate.
+double EffectiveMaxFloatingLossUSD()
+{
+   double cap = ActiveMaxFloatingLossUSD();
+
+   if(InpMaxLossToTargetRatio <= 0.0)
+      return cap;
+
+   double target = EffectiveQuickTargetUSD();
+   if(target <= 0.0)
+      return cap;
+
+   double maxCap = target * InpMaxLossToTargetRatio;
+
+   if(cap <= 0.0 || cap > maxCap)
+      return maxCap;
+
+   return cap;
+}
+
+//--- The distance the basket actually travels before it closes. The quick
+//--- target usually fires long before the broker take profit does.
+int EffectiveTargetPoints()
+{
+   int points = ResolveTakeProfitPoints();
+   double quickTarget = EffectiveQuickTargetUSD();
+
+   if(InpAggressiveMode && quickTarget > 0.0)
+   {
+      double quickPoints = MoneyToPoints(quickTarget, NormalizeVolume(ActiveInitialLot()));
+
+      if(quickPoints > 0.0 && (points <= 0 || quickPoints < points))
+         points = (int)MathRound(quickPoints);
+   }
+
+   return points;
+}
+
 //--- ATR sized stops keep gold usable across 2 digit and 3 digit brokers
 //--- instead of hard coding a point count that only fits one of them.
 int AtrDerivedPoints(double factor, int fallbackPoints)
@@ -299,12 +396,12 @@ int AtrDerivedPoints(double factor, int fallbackPoints)
    if(!InpUseAtrStops || factor <= 0.0)
       return fallbackPoints;
 
-   RefreshFeatureCache(false);
+   double atrPoints = EntryTimeframeAtrPoints();
 
-   if(CachedAtrPoints <= 0.0)
+   if(atrPoints <= 0.0)
       return fallbackPoints;
 
-   int points = (int)MathRound(CachedAtrPoints * factor);
+   int points = (int)MathRound(atrPoints * factor);
 
    if(InpAtrMinStopPoints > 0 && points < InpAtrMinStopPoints)
       points = InpAtrMinStopPoints;
@@ -497,11 +594,11 @@ void RunEngine(string eventSource)
    if(hasPosition) {
       bool timeOut = (TimeCurrent() - CycleStartTime >= InpMaxCycleTime);
       bool hitQuickTarget = (InpAggressiveMode &&
-                             ActiveQuickTargetUSD() > 0.0 &&
-                             totalProfit >= ActiveQuickTargetUSD());
+                             EffectiveQuickTargetUSD() > 0.0 &&
+                             totalProfit >= EffectiveQuickTargetUSD());
       bool hitNormalTarget = (totalProfit >= ActiveTargetUSD());
-      bool hitLossCap = (ActiveMaxFloatingLossUSD() > 0.0 &&
-                         totalProfit <= -ActiveMaxFloatingLossUSD());
+      bool hitLossCap = (EffectiveMaxFloatingLossUSD() > 0.0 &&
+                         totalProfit <= -EffectiveMaxFloatingLossUSD());
       bool hitProfitLock = ProfitLockTriggered(totalProfit);
 
       if(hitNormalTarget || hitQuickTarget || hitProfitLock || hitLossCap || timeOut) {
@@ -1390,8 +1487,10 @@ bool ScalpSpreadAllowsEntry(int spread)
    if(!InpFastScalpMode)
       return true;
 
-   int takeProfitPoints = ResolveTakeProfitPoints();
-   if(takeProfitPoints <= 0)
+   // Compare spread against the distance the trade really travels before
+   // it closes, not the broker take profit that almost never fires.
+   int targetPoints = EffectiveTargetPoints();
+   if(targetPoints <= 0)
       return true;
 
    double ratio = InpScalpMaxSpreadTpRatio;
@@ -1401,17 +1500,17 @@ bool ScalpSpreadAllowsEntry(int spread)
    if(ratio > 1.0)
       ratio = 1.0;
 
-   int scalpSpreadLimit = (int)MathFloor(takeProfitPoints * ratio);
+   int scalpSpreadLimit = (int)MathFloor(targetPoints * ratio);
    if(scalpSpreadLimit < 1)
       return true;
 
    if(spread <= scalpSpreadLimit)
       return true;
 
-   SetStatus("Waiting: spread too high for 0.50 scalp. Spread " +
-             IntegerToString(spread) + " > " + IntegerToString(scalpSpreadLimit) +
-             " scalp limit.");
-   LastScalpRiskReason = "Spread too high for 0.50 scalp.";
+   SetStatus("Waiting: spread " + IntegerToString(spread) +
+             " is too high for a " + IntegerToString(targetPoints) +
+             " point target (limit " + IntegerToString(scalpSpreadLimit) + ").");
+   LastScalpRiskReason = "Spread too high for the current profit target.";
    return false;
 }
 
@@ -1751,6 +1850,19 @@ bool CopyClosedBufferValue(int handle, double &value)
 
    value = buffer[0];
    return true;
+}
+
+//--- Stops must be sized from the timeframe the EA actually trades on.
+//--- PERIOD_CURRENT gave a daily ATR when the EA sat on an H1/D1 chart.
+double EntryTimeframeAtrPoints()
+{
+   double atr = 0.0;
+
+   if(CopyClosedBufferValue(AtrEntryHandle, atr) && atr > 0.0 && _Point > 0.0)
+      return atr / _Point;
+
+   RefreshFeatureCache(false);
+   return CachedAtrPoints;
 }
 
 double IndicatorAtrPoints()
@@ -2223,8 +2335,11 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "max_spread=" + IntegerToString(ActiveMaxSpread()) + "\n");
    FileWriteString(handle, "turns=" + IntegerToString(CurrentTurns) + "\n");
    FileWriteString(handle, "total_profit=" + DoubleToString(totalProfit, 2) + "\n");
-   FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
-   FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
+   FileWriteString(handle, "quick_target_usd=" + DoubleToString(EffectiveQuickTargetUSD(), 2) + "\n");
+   FileWriteString(handle, "max_loss_usd=" + DoubleToString(EffectiveMaxFloatingLossUSD(), 2) + "\n");
+   FileWriteString(handle, "requested_quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
+   FileWriteString(handle, "effective_target_points=" + IntegerToString(EffectiveTargetPoints()) + "\n");
+   FileWriteString(handle, "entry_atr_points=" + DoubleToString(EntryTimeframeAtrPoints(), 1) + "\n");
    FileWriteString(handle, "allow_recovery=" + BoolFlag(ActiveAllowRecovery()) + "\n");
    FileWriteString(handle, "take_profit_points=" + IntegerToString(ActiveTakeProfitPoints()) + "\n");
    FileWriteString(handle, "stop_loss_points=" + IntegerToString(ActiveStopLossPoints()) + "\n");
@@ -2485,8 +2600,11 @@ void DrawDashboard(int spread) {
            "Max Allowed: ", ActiveMaxSpread(), "\n",
            "Status: ", status, "\n",
            "Dashboard: ", dashboard, "\n",
-           "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2),
-           " | Peak: ", DoubleToString(CyclePeakProfit, 2), "\n",
+           "Target: ", DoubleToString(EffectiveQuickTargetUSD(), 2),
+           " (", EffectiveTargetPoints(), "pts) | Loss cap: ",
+           DoubleToString(EffectiveMaxFloatingLossUSD(), 2), "\n",
+           "Peak: ", DoubleToString(CyclePeakProfit, 2),
+           " | Entry ATR: ", DoubleToString(EntryTimeframeAtrPoints(), 0), "\n",
            "Account: ", AccountMoneyLabel, " x", DoubleToString(AccountMoneyScale, 0),
            " | ATR: ", DoubleToString(CachedAtrPoints, 0), "\n",
            "Recovery: ", ActiveAllowRecovery() ? "ON" : "OFF",
