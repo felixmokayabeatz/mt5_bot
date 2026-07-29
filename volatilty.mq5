@@ -7,8 +7,8 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 8
-#define EA_BUILD_VERSION "v1.0.7_8"
+#define EA_BUILD_NUMBER 10
+#define EA_BUILD_VERSION "v1.0.7_10"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
@@ -19,40 +19,70 @@ input double Multiplier   = 1.2;       // Recovery Multiplier (e.g. 1.2x)
 input double TargetUSD    = 1.0;       // Close all when Net Profit reaches this $ amount
 input int    MaxTurns     = 1;         // Max number of cycle trades; 1 disables recovery by position count
 
+input group "Symbol and Account"
+input bool   InpRestrictToGold = true;              // Refuse to start on non-gold charts
+input string InpGoldSymbols = "XAU,GOLD";           // Comma separated symbol fragments treated as gold
+input double InpMoneyScaleOverride = 0.0;           // 0 auto-detects cent accounts; else units per 1 USD
+
 input group "The Shields (Safety Filters)"
-input int    InpMaxSpread    = 25;     // Block new cycles if spread > 25
-input int    InpMaxCycleTime = 3600;   // Kill the whole cycle if stuck for 1hr (Seconds)
+input int    InpMaxSpread    = 300;    // Block new cycles above this spread
+input int    InpMaxCycleTime = 900;    // Kill the whole cycle if stuck (Seconds)
 input int    InpMagic        = 999999;
 
 input group "Aggressive Profit Capture"
 input bool   InpAggressiveMode = true;              // Close small basket profits quickly
-input double InpQuickBasketProfitUSD = 0.50;        // Fast close-all target; 0 disables
-input double InpMaxFloatingLossUSD = 10.0;          // Emergency basket loss cap; 0 disables
+input double InpQuickBasketProfitUSD = 0.25;        // Fast close-all target; 0 disables
+input double InpMaxFloatingLossUSD = 3.0;           // Emergency basket loss cap; 0 disables
+input bool   InpUseProfitLock = true;               // Close a winner that starts giving profit back
+input double InpProfitLockTriggerUSD = 0.15;        // Arm the lock once basket profit passes this
+input double InpProfitLockGiveBackUSD = 0.08;       // Close if profit drops this far below its peak
+input bool   InpUseTrailingStop = true;             // Move broker stops as price runs in our favour
+input int    InpBreakEvenPoints = 60;               // Profit points before the stop moves to entry
+input int    InpBreakEvenLockPoints = 10;           // Points locked in at break even
+input int    InpTrailingStartPoints = 90;           // Profit points before trailing starts
+input int    InpTrailingStopPoints = 45;            // Trailing distance kept behind price
 input bool   InpAllowRecovery = false;              // Off by default to avoid stacking losses
 input bool   InpUseHardStops = true;                // Attach SL/TP to orders
-input int    InpTakeProfitPoints = 300;             // Per-position TP in points; 0 disables
-input int    InpStopLossPoints = 900;               // Per-position SL in points; 0 disables
-input bool   InpUseTrendEntry = true;               // Start in MA trend direction
+input int    InpTakeProfitPoints = 200;             // Fixed per-position TP in points; 0 disables
+input int    InpStopLossPoints = 300;               // Fixed per-position SL in points; 0 disables
+input bool   InpUseAtrStops = true;                 // Size TP/SL from ATR instead of fixed points
+input double InpAtrTpFactor = 1.5;                  // TP = ATR x this
+input double InpAtrSlFactor = 1.5;                  // SL = ATR x this
+input int    InpAtrMinStopPoints = 30;              // Floor for ATR derived stops
+input int    InpAtrMaxStopPoints = 3000;            // Ceiling for ATR derived stops
+
+input group "Entry Signal"
+input bool   InpUseTrendEntry = true;               // Use the fast trend engine
 input bool   InpBlockCounterTrendRecovery = true;   // Do not add recovery trades against strong MA trend
 input int    InpTrendFilterPoints = 50;             // MA delta needed to call trend strong
 input ENUM_TIMEFRAMES InpEntryTrendTimeframe = PERIOD_M1; // Fast entry trend timeframe
-input int    InpEntryTrendLookbackBars = 3;         // Closed bars used for fast entry direction
-input int    InpEntryMinMovePoints = 50;            // Minimum fast move before opening a trend trade
-input int    InpEntryMinBodyPoints = 5;             // Minimum latest closed candle body
+input int    InpEntryTrendLookbackBars = 2;         // Closed bars used for fast entry direction
+input int    InpEntryMinMovePoints = 8;             // Minimum fast move before opening a trend trade
+input int    InpEntryMinBodyPoints = 1;             // Minimum latest closed candle body
 input int    InpEntryFastMaPeriod = 5;              // Fast MA for entry trend
 input int    InpEntrySlowMaPeriod = 13;             // Slow MA for entry trend
 input int    InpEntryRsiPeriod = 7;                 // RSI used to avoid exhausted entries
+
+input group "Ultra Open Mode"
+input bool   InpUltraOpenMode = true;               // Take any small confirmed push instead of waiting
+input int    InpUltraMinMovePoints = 4;             // Tiny move that still counts as direction
+input int    InpUltraMinBodyPoints = 1;             // Tiny candle body that still counts
+input double InpUltraSpreadMoveFactor = 0.05;       // How much spread inflates the move requirement
+input double InpUltraRsiBuyBlock = 97.0;            // Only block buys this far into overbought
+input double InpUltraRsiSellBlock = 3.0;            // Only block sells this far into oversold
+
+input group "Risk Throttles"
 input bool   InpFastScalpMode = true;               // Allow fast continuation scalps
-input double InpScalpMaxSpreadTpRatio = 0.35;       // Max spread as a ratio of scalp TP points
-input int    InpScalpMaxClosedTrades = 10;          // Pause after N closed scalp trades per window
+input double InpScalpMaxSpreadTpRatio = 0.50;       // Max spread as a ratio of scalp TP points
+input int    InpScalpMaxClosedTrades = 200;         // Pause after N closed scalp trades per window
 input int    InpScalpWindowSeconds = 900;           // Scalp burst accounting window
-input int    InpMaxConsecutiveLosses = 2;           // Pause after this many losing closes
-input int    InpLossPauseSeconds = 120;             // Pause all entries after a loss streak
-input int    InpLossSideCooldownSeconds = 180;      // Pause the stopped side after a loss
-input int    InpMinSecondsBetweenTrades = 5;        // Trade throttle to prevent duplicate entries
+input int    InpMaxConsecutiveLosses = 4;           // Pause after this many losing closes
+input int    InpLossPauseSeconds = 20;              // Pause all entries after a loss streak
+input int    InpLossSideCooldownSeconds = 20;       // Pause the stopped side after a loss
+input int    InpMinSecondsBetweenTrades = 1;        // Trade throttle to prevent duplicate entries
 input double InpMaxRecoveryLot = 0.05;              // Cap recovery lot; 0 disables
 input int    InpMaxSameSidePositions = 2;           // Max buy or sell positions per cycle; 0 disables
-input int    InpMinSameSideDistancePoints = 300;    // Block same-side entries too close to existing positions
+input int    InpMinSameSideDistancePoints = 150;    // Block same-side entries too close to existing positions
 
 input group "Django Dashboard Control"
 input bool   InpUseDashboardControl = true;
@@ -64,13 +94,15 @@ input bool   InpEnableCsvLogging    = true;
 input string InpEventLogFile        = "recovery_shield_events.csv";
 input string InpCycleLogFile        = "recovery_shield_cycles.csv";
 input bool   InpUseAiFilter         = true;
+input bool   InpUseAiFilterInBacktest = false;  // Keep the model gate off while backtesting
 input string InpModelFile           = "recovery_shield_model.txt";
 input double InpDefaultModelThreshold = 0.55;
 
 input group "Performance"
+input int    InpTimerMilliseconds   = 100;      // Engine heartbeat between ticks
 input int    InpControlPollSeconds  = 1;        // Read dashboard commands at most once per N seconds
-input int    InpStatusWriteSeconds  = 2;        // Write dashboard status at most once per N seconds
-input int    InpTradeDeviationPoints = 20;      // Max price deviation used by CTrade
+input int    InpStatusWriteSeconds  = 1;        // Write dashboard status at most once per N seconds
+input int    InpTradeDeviationPoints = 30;      // Max price deviation used by CTrade
 
 //--- Global Variables
 CTrade         trade;
@@ -110,7 +142,11 @@ int            CycleStartSpread = 0;
 double         CycleFeatures[MODEL_FEATURE_COUNT];
 double         CycleModelScore = 0.0;
 double         CycleWorstProfit = 0.0;
+double         CyclePeakProfit = 0.0;
 bool           MaxTurnsLogged = false;
+bool           TesterMode = false;
+double         AccountMoneyScale = 1.0;
+string         AccountMoneyLabel = "USD";
 bool           ModelFileFound = false;
 bool           ModelGateEnabled = false;
 int            ModelTrainedRows = 0;
@@ -148,8 +184,22 @@ int            ScalpClosedTrades = 0;
 string         LastScalpRiskReason = "Ready.";
 
 int OnInit() {
+   TesterMode = ((bool)MQLInfoInteger(MQL_TESTER) ||
+                 (bool)MQLInfoInteger(MQL_OPTIMIZATION) ||
+                 (bool)MQLInfoInteger(MQL_VISUAL_MODE));
+
+   if(!SymbolIsAllowed())
+   {
+      string blocked = _Symbol + " is not a gold symbol. Attach to XAUUSD or set InpRestrictToGold=false.";
+      Print("RECOVERY SHIELD: ", blocked);
+      Comment("--- RECOVERY SHIELD ---\nBLOCKED\n", blocked);
+      return(INIT_FAILED);
+   }
+
+   ResolveAccountMoneyScale();
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpTradeDeviationPoints);
+   trade.SetAsyncMode(false);
    AtrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
    FastMaHandle = iMA(_Symbol, PERIOD_CURRENT, 10, 0, MODE_SMA, PRICE_CLOSE);
    SlowMaHandle = iMA(_Symbol, PERIOD_CURRENT, 30, 0, MODE_SMA, PRICE_CLOSE);
@@ -157,9 +207,13 @@ int OnInit() {
    InitializeModelDefaults();
    ReadDashboardControl(true);
    ReadAiModel(true);
-   EventSetTimer(1);
-   SetStatus("EA " + EA_BUILD_VERSION + " initialized on " + _Symbol + ". Waiting for dashboard command.");
-   AppendEvent("EA_INIT", 0, 0.0, "initialized version=" + EA_BUILD_VERSION);
+   StartEngineTimer();
+   SetStatus("EA " + EA_BUILD_VERSION + " initialized on " + _Symbol +
+             (DashboardControlActive() ? ". Waiting for dashboard command." : ". Running on local inputs."));
+   AppendEvent("EA_INIT", 0, 0.0, "initialized version=" + EA_BUILD_VERSION +
+               " symbol=" + _Symbol +
+               " currency=" + AccountMoneyLabel +
+               " money_scale=" + DoubleToString(AccountMoneyScale, 2));
    Comment("--- RECOVERY SHIELD ---\n",
            "Status: ", LastStatus, "\n",
            "If no trade opens, check the Experts tab.");
@@ -174,6 +228,149 @@ void OnDeinit(const int reason)
    ReleaseIndicator(SlowMaHandle);
    ReleaseIndicator(RsiHandle);
    Comment("");
+}
+
+//--- Gold-only guard. The fragments in InpGoldSymbols cover broker
+//--- variants such as XAUUSD, XAUUSD.m, GOLD and GOLDmicro.
+bool SymbolIsAllowed()
+{
+   if(!InpRestrictToGold)
+      return true;
+
+   string upperSymbol = _Symbol;
+   StringToUpper(upperSymbol);
+
+   string fragments[];
+   int count = StringSplit(InpGoldSymbols, ',', fragments);
+
+   for(int i = 0; i < count; i++)
+   {
+      string token = fragments[i];
+      StringTrimLeft(token);
+      StringTrimRight(token);
+      StringToUpper(token);
+
+      if(token == "")
+         continue;
+
+      if(StringFind(upperSymbol, token) >= 0)
+         return true;
+   }
+
+   return false;
+}
+
+//--- Cent accounts report profit in cents, so USD targets need scaling
+//--- before they are compared against basket profit.
+void ResolveAccountMoneyScale()
+{
+   string currency = AccountInfoString(ACCOUNT_CURRENCY);
+   AccountMoneyLabel = (currency == "" ? "USD" : currency);
+
+   if(InpMoneyScaleOverride > 0.0)
+   {
+      AccountMoneyScale = InpMoneyScaleOverride;
+      return;
+   }
+
+   string upperCurrency = currency;
+   StringToUpper(upperCurrency);
+
+   if(upperCurrency == "USC" || upperCurrency == "USDC" || upperCurrency == "EUC" ||
+      upperCurrency == "EURC" || upperCurrency == "RUC" || upperCurrency == "GBC" ||
+      StringFind(upperCurrency, "CENT") >= 0)
+   {
+      AccountMoneyScale = 100.0;
+      return;
+   }
+
+   AccountMoneyScale = 1.0;
+}
+
+double ScaledMoney(double usdAmount)
+{
+   return(usdAmount * AccountMoneyScale);
+}
+
+//--- ATR sized stops keep gold usable across 2 digit and 3 digit brokers
+//--- instead of hard coding a point count that only fits one of them.
+int AtrDerivedPoints(double factor, int fallbackPoints)
+{
+   if(!InpUseAtrStops || factor <= 0.0)
+      return fallbackPoints;
+
+   RefreshFeatureCache(false);
+
+   if(CachedAtrPoints <= 0.0)
+      return fallbackPoints;
+
+   int points = (int)MathRound(CachedAtrPoints * factor);
+
+   if(InpAtrMinStopPoints > 0 && points < InpAtrMinStopPoints)
+      points = InpAtrMinStopPoints;
+
+   if(InpAtrMaxStopPoints > 0 && points > InpAtrMaxStopPoints)
+      points = InpAtrMaxStopPoints;
+
+   return points;
+}
+
+int ResolveTakeProfitPoints()
+{
+   int fixedPoints = ActiveTakeProfitPoints();
+
+   if(fixedPoints <= 0)
+      return 0;
+
+   return AtrDerivedPoints(InpAtrTpFactor, fixedPoints);
+}
+
+int ResolveStopLossPoints()
+{
+   int fixedPoints = ActiveStopLossPoints();
+
+   if(fixedPoints <= 0)
+      return 0;
+
+   return AtrDerivedPoints(InpAtrSlFactor, fixedPoints);
+}
+
+void StartEngineTimer()
+{
+   int milliseconds = InpTimerMilliseconds;
+
+   if(milliseconds <= 0)
+   {
+      EventSetTimer(1);
+      return;
+   }
+
+   if(milliseconds < 20)
+      milliseconds = 20;
+
+   if(milliseconds >= 1000)
+   {
+      EventSetTimer(milliseconds / 1000);
+      return;
+   }
+
+   EventSetMillisecondTimer(milliseconds);
+}
+
+bool DashboardControlActive()
+{
+   return(InpUseDashboardControl && !TesterMode);
+}
+
+bool AiFilterActive()
+{
+   if(!InpUseAiFilter)
+      return false;
+
+   if(TesterMode && !InpUseAiFilterInBacktest)
+      return false;
+
+   return true;
 }
 
 void OnTick()
@@ -268,8 +465,14 @@ void RunEngine(string eventSource)
    );
    SyncCycleFromPositions(hasPosition, positionCount, firstType, firstTime, firstOpenPrice, bid, ask, spread);
 
-   if(hasPosition && CycleId != "" && totalProfit < CycleWorstProfit)
-      CycleWorstProfit = totalProfit;
+   if(hasPosition && CycleId != "")
+   {
+      if(totalProfit < CycleWorstProfit)
+         CycleWorstProfit = totalProfit;
+
+      if(totalProfit > CyclePeakProfit)
+         CyclePeakProfit = totalProfit;
+   }
 
    if(DashboardCloseAll)
    {
@@ -299,14 +502,17 @@ void RunEngine(string eventSource)
       bool hitNormalTarget = (totalProfit >= ActiveTargetUSD());
       bool hitLossCap = (ActiveMaxFloatingLossUSD() > 0.0 &&
                          totalProfit <= -ActiveMaxFloatingLossUSD());
-      
-      if(hitNormalTarget || hitQuickTarget || hitLossCap || timeOut) {
+      bool hitProfitLock = ProfitLockTriggered(totalProfit);
+
+      if(hitNormalTarget || hitQuickTarget || hitProfitLock || hitLossCap || timeOut) {
          if(timeOut) Print("SHIELD: Cycle timed out. Closing to prevent 24hr trap.");
          if(hitLossCap) Print("SHIELD: Max floating loss hit. Closing basket.");
 
          string exitReason = "target";
          if(hitQuickTarget)
             exitReason = "quick_target";
+         if(hitProfitLock)
+            exitReason = "profit_lock";
          if(hitLossCap)
             exitReason = "max_loss";
          if(timeOut)
@@ -318,6 +524,8 @@ void RunEngine(string eventSource)
          WriteDashboardStatus(spread, false, 0.0, true);
          return;
       }
+
+      ManageOpenPositions(bid, ask);
    }
 
    // 4. INITIAL ENTRY (With Spread Filter)
@@ -509,6 +717,104 @@ void CloseAll() {
    }
 }
 
+bool ProfitLockTriggered(double totalProfit)
+{
+   if(!InpUseProfitLock)
+      return false;
+
+   double trigger = ScaledMoney(InpProfitLockTriggerUSD);
+   if(trigger <= 0.0 || CyclePeakProfit < trigger)
+      return false;
+
+   double giveBack = ScaledMoney(InpProfitLockGiveBackUSD);
+   if(giveBack <= 0.0)
+      giveBack = trigger * 0.5;
+
+   if(totalProfit > CyclePeakProfit - giveBack)
+      return false;
+
+   Print("SHIELD: Profit lock hit. Peak ", DoubleToString(CyclePeakProfit, 2),
+         " now ", DoubleToString(totalProfit, 2));
+
+   return true;
+}
+
+void ManageOpenPositions(double bid, double ask)
+{
+   if(!InpUseTrailingStop || !InpUseHardStops || _Point <= 0.0)
+      return;
+
+   if(InpBreakEvenPoints <= 0 && InpTrailingStartPoints <= 0)
+      return;
+
+   double minDistance = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+   double tolerance = _Point / 2.0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!m_position.SelectByIndex(i) || m_position.Symbol() != _Symbol || m_position.Magic() != InpMagic)
+         continue;
+
+      ulong ticket = m_position.Ticket();
+      ENUM_POSITION_TYPE positionType = m_position.PositionType();
+      double openPrice = m_position.PriceOpen();
+      double currentStop = m_position.StopLoss();
+      double takeProfit = m_position.TakeProfit();
+
+      if(positionType == POSITION_TYPE_BUY)
+      {
+         double profitPoints = (bid - openPrice) / _Point;
+         double newStop = currentStop;
+
+         if(InpBreakEvenPoints > 0 && profitPoints >= InpBreakEvenPoints)
+         {
+            double breakEven = NormalizeDouble(openPrice + (InpBreakEvenLockPoints * _Point), _Digits);
+            if(breakEven > newStop)
+               newStop = breakEven;
+         }
+
+         if(InpTrailingStartPoints > 0 && InpTrailingStopPoints > 0 && profitPoints >= InpTrailingStartPoints)
+         {
+            double trailStop = NormalizeDouble(bid - (InpTrailingStopPoints * _Point), _Digits);
+            if(trailStop > newStop)
+               newStop = trailStop;
+         }
+
+         if(newStop > currentStop + tolerance && (bid - newStop) > minDistance)
+         {
+            if(!trade.PositionModify(ticket, newStop, takeProfit) || !TradeSucceeded())
+               LogTradeFailure("Trailing stop BUY");
+         }
+      }
+      else if(positionType == POSITION_TYPE_SELL)
+      {
+         double profitPoints = (openPrice - ask) / _Point;
+         double effectiveStop = (currentStop > 0.0 ? currentStop : DBL_MAX);
+         double newStop = effectiveStop;
+
+         if(InpBreakEvenPoints > 0 && profitPoints >= InpBreakEvenPoints)
+         {
+            double breakEven = NormalizeDouble(openPrice - (InpBreakEvenLockPoints * _Point), _Digits);
+            if(breakEven < newStop)
+               newStop = breakEven;
+         }
+
+         if(InpTrailingStartPoints > 0 && InpTrailingStopPoints > 0 && profitPoints >= InpTrailingStartPoints)
+         {
+            double trailStop = NormalizeDouble(ask + (InpTrailingStopPoints * _Point), _Digits);
+            if(trailStop < newStop)
+               newStop = trailStop;
+         }
+
+         if(newStop < effectiveStop - tolerance && (newStop - ask) > minDistance)
+         {
+            if(!trade.PositionModify(ticket, newStop, takeProfit) || !TradeSucceeded())
+               LogTradeFailure("Trailing stop SELL");
+         }
+      }
+   }
+}
+
 void ReleaseIndicator(int &handle)
 {
    if(handle != INVALID_HANDLE)
@@ -527,6 +833,7 @@ void ResetEA() {
    CycleStartSpread = 0;
    CycleModelScore = 0.0;
    CycleWorstProfit = 0.0;
+   CyclePeakProfit = 0.0;
    MaxTurnsLogged = false;
 
    for(int i = 0; i < MODEL_FEATURE_COUNT; i++)
@@ -674,8 +981,8 @@ void BuildOrderStops(ENUM_POSITION_TYPE entryType, double entryPrice, double &st
    if(!InpUseHardStops || _Point <= 0.0)
       return;
 
-   int takeProfitPoints = ActiveTakeProfitPoints();
-   int stopLossPoints = ActiveStopLossPoints();
+   int takeProfitPoints = ResolveTakeProfitPoints();
+   int stopLossPoints = ResolveStopLossPoints();
 
    if(entryType == POSITION_TYPE_SELL)
    {
@@ -804,7 +1111,11 @@ int FastEntryTrendSignal(int spread)
    if(minMovePoints < 1.0)
       minMovePoints = 1.0;
 
-   double spreadAdjustedMove = (double)spread * 0.20;
+   double spreadMoveFactor = InpUltraOpenMode ? InpUltraSpreadMoveFactor : 0.20;
+   if(spreadMoveFactor < 0.0)
+      spreadMoveFactor = 0.0;
+
+   double spreadAdjustedMove = (double)spread * spreadMoveFactor;
    if(spreadAdjustedMove > minMovePoints)
       minMovePoints = spreadAdjustedMove;
 
@@ -904,7 +1215,55 @@ int FastEntryTrendSignal(int spread)
       return -1;
    }
 
+   int ultraSignal = UltraOpenSignal(latestClose, fastMa);
+   if(ultraSignal != 0)
+   {
+      LastEntryTrendSignal = ultraSignal;
+      LastEntryTrendReason = (ultraSignal > 0 ? "ultra_open_buy " : "ultra_open_sell ") + LastEntryTrendReason;
+      return ultraSignal;
+   }
+
    LastEntryTrendReason = "wait " + LastEntryTrendReason;
+   return 0;
+}
+
+//--- Last-chance direction call so the EA keeps taking small pushes
+//--- instead of standing flat whenever the strict patterns disagree.
+int UltraOpenSignal(double latestClose, double fastMa)
+{
+   if(!InpUltraOpenMode)
+      return 0;
+
+   double minMove = (double)InpUltraMinMovePoints;
+   if(minMove < 1.0)
+      minMove = 1.0;
+
+   double minBody = (double)InpUltraMinBodyPoints;
+   if(minBody < 0.0)
+      minBody = 0.0;
+
+   bool buyPush = (LastEntryTrendMovePoints >= minMove || LastEntryTrendBodyPoints >= minBody);
+   bool sellPush = (LastEntryTrendMovePoints <= -minMove || LastEntryTrendBodyPoints <= -minBody);
+
+   if(buyPush && sellPush)
+   {
+      // Both sides showed something, so let the candle body break the tie.
+      buyPush = (LastEntryTrendBodyPoints > 0.0);
+      sellPush = (LastEntryTrendBodyPoints < 0.0);
+
+      if(!buyPush && !sellPush)
+      {
+         buyPush = (latestClose > fastMa);
+         sellPush = (latestClose < fastMa);
+      }
+   }
+
+   if(buyPush && LastEntryTrendRsi < InpUltraRsiBuyBlock)
+      return 1;
+
+   if(sellPush && LastEntryTrendRsi > InpUltraRsiSellBlock)
+      return -1;
+
    return 0;
 }
 
@@ -1031,7 +1390,7 @@ bool ScalpSpreadAllowsEntry(int spread)
    if(!InpFastScalpMode)
       return true;
 
-   int takeProfitPoints = ActiveTakeProfitPoints();
+   int takeProfitPoints = ResolveTakeProfitPoints();
    if(takeProfitPoints <= 0)
       return true;
 
@@ -1208,10 +1567,12 @@ void InitializeModelDefaults()
 
 void ReadAiModel(bool forceRead)
 {
-   if(!InpUseAiFilter)
+   if(!AiFilterActive())
    {
       ModelGateEnabled = false;
-      ModelReason = "AI filter disabled in EA inputs.";
+      ModelReason = (TesterMode && InpUseAiFilter)
+                    ? "AI filter off for backtest. Still recording cycles."
+                    : "AI filter disabled in EA inputs.";
       return;
    }
 
@@ -1298,7 +1659,7 @@ bool AiAllowsEntry(int spread, double &score)
    score = ScoreModel(features);
    LastModelScore = score;
 
-   if(!InpUseAiFilter || !ModelGateEnabled)
+   if(!AiFilterActive() || !ModelGateEnabled)
       return true;
 
    if(score >= ModelThreshold)
@@ -1612,6 +1973,7 @@ void StartCycle(double bid, double ask, int spread, double modelScore)
    CycleStartSpread = spread;
    CycleModelScore = modelScore;
    CycleWorstProfit = 0.0;
+   CyclePeakProfit = 0.0;
    MaxTurnsLogged = false;
    GetFeatureVector(CycleFeatures, spread);
    AppendEvent("CYCLE_START", spread, 0.0, "model_score=" + DoubleToString(modelScore, 4));
@@ -1737,7 +2099,7 @@ void WriteCycleRow(string exitReason, int durationSeconds, int exitSpread, doubl
 
 void ReadDashboardControl(bool forceRead)
 {
-   if(!InpUseDashboardControl)
+   if(!DashboardControlActive())
    {
       DashboardEnabled = true;
       DashboardCloseAll = false;
@@ -1830,7 +2192,7 @@ void ReadDashboardControl(bool forceRead)
 
 void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool forceWrite=false)
 {
-   if(!InpUseDashboardControl)
+   if(!DashboardControlActive())
       return;
 
    int writeSeconds = InpStatusWriteSeconds;
@@ -1873,6 +2235,15 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "lower_level=" + DoubleToString(LowerLevel, _Digits) + "\n");
    FileWriteString(handle, "cycle_id=" + CycleId + "\n");
    FileWriteString(handle, "cycle_worst_profit=" + DoubleToString(CycleWorstProfit, 2) + "\n");
+   FileWriteString(handle, "cycle_peak_profit=" + DoubleToString(CyclePeakProfit, 2) + "\n");
+   FileWriteString(handle, "profit_lock_trigger=" + DoubleToString(InpUseProfitLock ? ScaledMoney(InpProfitLockTriggerUSD) : 0.0, 2) + "\n");
+   FileWriteString(handle, "profit_lock_giveback=" + DoubleToString(InpUseProfitLock ? ScaledMoney(InpProfitLockGiveBackUSD) : 0.0, 2) + "\n");
+   FileWriteString(handle, "ultra_open_mode=" + BoolFlag(InpUltraOpenMode) + "\n");
+   FileWriteString(handle, "account_currency=" + AccountMoneyLabel + "\n");
+   FileWriteString(handle, "money_scale=" + DoubleToString(AccountMoneyScale, 2) + "\n");
+   FileWriteString(handle, "resolved_take_profit_points=" + IntegerToString(ResolveTakeProfitPoints()) + "\n");
+   FileWriteString(handle, "resolved_stop_loss_points=" + IntegerToString(ResolveStopLossPoints()) + "\n");
+   FileWriteString(handle, "atr_points=" + DoubleToString(CachedAtrPoints, 1) + "\n");
    FileWriteString(handle, "entry_trend_signal=" + EntryTrendLabel() + "\n");
    FileWriteString(handle, "entry_trend_move_points=" + DoubleToString(LastEntryTrendMovePoints, 1) + "\n");
    FileWriteString(handle, "entry_trend_body_points=" + DoubleToString(LastEntryTrendBodyPoints, 1) + "\n");
@@ -1898,7 +2269,7 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
 
 void AcknowledgeCloseAllCommand()
 {
-   if(!InpUseDashboardControl)
+   if(!DashboardControlActive())
       return;
 
    int handle = FileOpen(InpControlFile,
@@ -1960,19 +2331,22 @@ double ActiveMultiplier()
    return(DashboardMultiplier > 0.0 ? DashboardMultiplier : Multiplier);
 }
 
+//--- Money targets are entered in USD and scaled into account currency,
+//--- so 0.25 means a real 0.25 USD on both standard and cent accounts.
 double ActiveTargetUSD()
 {
-   return(DashboardTargetUSD > 0.0 ? DashboardTargetUSD : TargetUSD);
+   return(ScaledMoney(DashboardTargetUSD > 0.0 ? DashboardTargetUSD : TargetUSD));
 }
 
 double ActiveQuickTargetUSD()
 {
-   return(DashboardQuickTargetUSD >= 0.0 ? DashboardQuickTargetUSD : InpQuickBasketProfitUSD);
+   return(ScaledMoney(DashboardQuickTargetUSD >= 0.0 ? DashboardQuickTargetUSD : InpQuickBasketProfitUSD));
 }
 
 double ActiveMaxFloatingLossUSD()
 {
-   return(DashboardMaxLossUSD > 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD);
+   // >= 0 so a dashboard value of 0 really does disable the cap.
+   return(ScaledMoney(DashboardMaxLossUSD >= 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD));
 }
 
 bool ActiveAllowRecovery()
@@ -2102,17 +2476,21 @@ void DrawDashboard(int spread) {
    LastDashboardDraw = TimeCurrent();
 
    string status = (spread <= ActiveMaxSpread()) ? "SAFE" : "TOXIC SPREAD";
-   string dashboard = InpUseDashboardControl ? (DashboardEnabled ? "RUNNING" : "PAUSED") : "LOCAL INPUTS";
-   string modelStatus = InpUseAiFilter ? (ModelGateEnabled ? "ACTIVE" : "RECORDING") : "OFF";
+   string dashboard = DashboardControlActive() ? (DashboardEnabled ? "RUNNING" : "PAUSED") : "LOCAL INPUTS";
+   string modelStatus = AiFilterActive() ? (ModelGateEnabled ? "ACTIVE" : "RECORDING") : "OFF";
 
    Comment("--- RECOVERY SHIELD ---\n",
-           "Version: ", EA_BUILD_VERSION, "\n",
+           "Version: ", EA_BUILD_VERSION, " | Entry: ", InpUltraOpenMode ? "ULTRA OPEN" : "STRICT", "\n",
            "Current Spread: ", spread, "\n",
            "Max Allowed: ", ActiveMaxSpread(), "\n",
            "Status: ", status, "\n",
            "Dashboard: ", dashboard, "\n",
-           "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2), "\n",
-           "Recovery: ", ActiveAllowRecovery() ? "ON" : "OFF", " | TP/SL: ", ActiveTakeProfitPoints(), "/", ActiveStopLossPoints(), "\n",
+           "Quick Target: ", DoubleToString(ActiveQuickTargetUSD(), 2),
+           " | Peak: ", DoubleToString(CyclePeakProfit, 2), "\n",
+           "Account: ", AccountMoneyLabel, " x", DoubleToString(AccountMoneyScale, 0),
+           " | ATR: ", DoubleToString(CachedAtrPoints, 0), "\n",
+           "Recovery: ", ActiveAllowRecovery() ? "ON" : "OFF",
+           " | TP/SL: ", ResolveTakeProfitPoints(), "/", ResolveStopLossPoints(), "\n",
            "Entry Trend: ", EntryTrendLabel(), " | ", LastEntryTrendReason, "\n",
            "Scalps: ", ScalpClosedTrades, "/", InpScalpMaxClosedTrades,
            " | Loss Streak: ", ConsecutiveLosses, "\n",
