@@ -33,9 +33,12 @@ def env_float(name, default=None):
     if raw is None:
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         return default
+    if not math.isfinite(value):
+        return default
+    return value
 
 
 THRESHOLD_OVERRIDE = env_float("MODEL_THRESHOLD")
@@ -65,11 +68,20 @@ def model_path():
     return common_files_dir() / "recovery_shield_model.txt"
 
 
-def parse_float(row, key, default=0.0):
+def parse_optional_float(row, key):
+    """Return a finite float, or None when the cell is missing, blank, nan or inf."""
     try:
-        return float(str(row.get(key, "")).strip())
+        value = float(str(row.get(key, "")).strip())
     except (TypeError, ValueError):
-        return default
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
+
+
+def parse_float(row, key, default=0.0):
+    value = parse_optional_float(row, key)
+    return default if value is None else value
 
 
 def load_rows(path):
@@ -83,7 +95,11 @@ def load_rows(path):
             if not row:
                 continue
 
-            profit = parse_float(row, "exit_profit")
+            # A row without a readable result must not be counted as a win.
+            profit = parse_optional_float(row, "exit_profit")
+            if profit is None:
+                continue
+
             features = [parse_float(row, name) for name in FEATURES]
             rows.append(
                 {

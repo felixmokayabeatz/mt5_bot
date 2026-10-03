@@ -17,7 +17,11 @@ set "MODE=%~1"
 
 if "%DASHBOARD_HOST%"=="" set "DASHBOARD_HOST=127.0.0.1"
 if "%DASHBOARD_PORT%"=="" set "DASHBOARD_PORT=8000"
-if /i "%MODE%"=="lan" set "DASHBOARD_HOST=0.0.0.0"
+if /i "%MODE%"=="lan" (
+  set "DASHBOARD_HOST=0.0.0.0"
+  if "%DJANGO_ALLOWED_HOSTS%"=="" set "DJANGO_ALLOWED_HOSTS=*"
+  echo [start] LAN mode: the dashboard has no login. Only use it on a network you trust.
+)
 
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONUNBUFFERED=1"
@@ -74,7 +78,7 @@ if "%DASHBOARD_HOST%"=="0.0.0.0" set "BROWSER_HOST=127.0.0.1"
 set "DASHBOARD_URL=http://!BROWSER_HOST!:%DASHBOARD_PORT%/"
 
 start "" /min powershell -NoProfile -Command ^
-  "for ($i=0; $i -lt 40; $i++) { try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 '!DASHBOARD_URL!' ^| Out-Null; break } catch { Start-Sleep -Milliseconds 250 } }; Start-Process '!DASHBOARD_URL!'"
+  "for ($i=0; $i -lt 40; $i++) { try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 '!DASHBOARD_URL!' | Out-Null; break } catch { Start-Sleep -Milliseconds 250 } }; Start-Process '!DASHBOARD_URL!'"
 
 echo.
 echo   Recovery Shield dashboard

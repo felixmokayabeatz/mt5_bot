@@ -7,8 +7,8 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 11
-#define EA_BUILD_VERSION "v1.0.7_11"
+#define EA_BUILD_NUMBER 12
+#define EA_BUILD_VERSION "v1.0.7_12"
 #define MODEL_FEATURE_COUNT 10
 
 //--- Input Parameters
@@ -188,6 +188,9 @@ double         LastClosedProfit = 0.0;
 datetime       ScalpWindowStart = 0;
 int            ScalpClosedTrades = 0;
 string         LastScalpRiskReason = "Ready.";
+bool           CycleLogged = false;            // cycle row already written for the current cycle
+bool           CycleFeaturesCaptured = false;  // StartCycle() ran, so CycleFeatures[] is real data
+double         CycleLastProfit = 0.0;          // last basket profit seen while positions were open
 
 int OnInit() {
    TesterMode = ((bool)MQLInfoInteger(MQL_TESTER) ||
@@ -298,6 +301,16 @@ void ResolveAccountMoneyScale()
 double ScaledMoney(double usdAmount)
 {
    return(usdAmount * AccountMoneyScale);
+}
+
+//--- Inverse of ScaledMoney(). The control file holds USD, so anything the EA
+//--- writes back into it must be converted back from account currency.
+double UnscaleMoney(double accountAmount)
+{
+   if(AccountMoneyScale <= 0.0)
+      return(accountAmount);
+
+   return(accountAmount / AccountMoneyScale);
 }
 
 //--- Money and points are not interchangeable across symbols and lot
@@ -562,8 +575,23 @@ void RunEngine(string eventSource)
    );
    SyncCycleFromPositions(hasPosition, positionCount, firstType, firstTime, firstOpenPrice, bid, ask, spread);
 
+   // A basket can disappear without the EA closing it (broker TP/SL, trailing
+   // stop, manual close). Log that cycle once and clear the stale state, so the
+   // trainer also sees broker-side exits instead of only EA-forced ones.
+   // The short grace period covers a position list that lags a fresh entry.
+   if(!hasPosition && CycleId != "" &&
+      (CycleStartTime == 0 || TimeCurrent() - CycleStartTime >= 2))
+   {
+      if(!CycleLogged)
+         FinishCycle("external_close", spread, CycleLastProfit);
+
+      ResetEA();
+   }
+
    if(hasPosition && CycleId != "")
    {
+      CycleLastProfit = totalProfit;
+
       if(totalProfit < CycleWorstProfit)
          CycleWorstProfit = totalProfit;
 
@@ -578,6 +606,15 @@ void RunEngine(string eventSource)
          SetStatus("Dashboard close-all command received.");
          FinishCycle("dashboard_close_all", spread, totalProfit);
          CloseAll();
+
+         if(HasManagedPosition())
+         {
+            // Leave the command pending so the next tick retries the close.
+            SetStatus("Close-all incomplete. Some positions are still open, retrying.");
+            WriteDashboardStatus(spread, true, CurrentManagedProfit(), true);
+            return;
+         }
+
          ResetEA();
       }
       else
@@ -617,6 +654,14 @@ void RunEngine(string eventSource)
 
          FinishCycle(exitReason, spread, totalProfit);
          CloseAll();
+
+         if(HasManagedPosition())
+         {
+            SetStatus("Exit triggered (" + exitReason + ") but some positions are still open, retrying.");
+            WriteDashboardStatus(spread, true, CurrentManagedProfit(), true);
+            return;
+         }
+
          ResetEA();
          WriteDashboardStatus(spread, false, 0.0, true);
          return;
@@ -932,6 +977,9 @@ void ResetEA() {
    CycleWorstProfit = 0.0;
    CyclePeakProfit = 0.0;
    MaxTurnsLogged = false;
+   CycleLogged = false;
+   CycleFeaturesCaptured = false;
+   CycleLastProfit = 0.0;
 
    for(int i = 0; i < MODEL_FEATURE_COUNT; i++)
       CycleFeatures[i] = 0.0;
@@ -2087,7 +2135,10 @@ void StartCycle(double bid, double ask, int spread, double modelScore)
    CycleWorstProfit = 0.0;
    CyclePeakProfit = 0.0;
    MaxTurnsLogged = false;
+   CycleLogged = false;
+   CycleLastProfit = 0.0;
    GetFeatureVector(CycleFeatures, spread);
+   CycleFeaturesCaptured = true;
    AppendEvent("CYCLE_START", spread, 0.0, "model_score=" + DoubleToString(modelScore, 4));
 }
 
@@ -2099,11 +2150,23 @@ void FinishCycle(string exitReason, int spread, double totalProfit)
       return;
    }
 
+   // A close that fails is retried on the next tick; log the cycle only once.
+   if(CycleLogged)
+      return;
+
+   CycleLogged = true;
+
    int durationSeconds = (int)(TimeCurrent() - CycleStartedAt);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-   WriteCycleRow(exitReason, durationSeconds, spread, bid, ask, totalProfit);
+   // A cycle adopted after an EA restart has no entry features. Writing it
+   // would feed the trainer a row of zeros, so only the event is logged.
+   if(CycleFeaturesCaptured)
+      WriteCycleRow(exitReason, durationSeconds, spread, bid, ask, totalProfit);
+   else
+      exitReason += " (adopted after restart, no training row)";
+
    AppendEvent("CYCLE_END", spread, totalProfit, exitReason);
 }
 
@@ -2401,9 +2464,9 @@ void AcknowledgeCloseAllCommand()
    FileWriteString(handle, "initial_lot=" + DoubleToString(ActiveInitialLot(), 2) + "\n");
    FileWriteString(handle, "zone_height=" + IntegerToString(ActiveZoneHeight()) + "\n");
    FileWriteString(handle, "multiplier=" + DoubleToString(ActiveMultiplier(), 2) + "\n");
-   FileWriteString(handle, "target_usd=" + DoubleToString(ActiveTargetUSD(), 2) + "\n");
-   FileWriteString(handle, "quick_target_usd=" + DoubleToString(ActiveQuickTargetUSD(), 2) + "\n");
-   FileWriteString(handle, "max_loss_usd=" + DoubleToString(ActiveMaxFloatingLossUSD(), 2) + "\n");
+   FileWriteString(handle, "target_usd=" + DoubleToString(UnscaleMoney(ActiveTargetUSD()), 2) + "\n");
+   FileWriteString(handle, "quick_target_usd=" + DoubleToString(UnscaleMoney(ActiveQuickTargetUSD()), 2) + "\n");
+   FileWriteString(handle, "max_loss_usd=" + DoubleToString(UnscaleMoney(ActiveMaxFloatingLossUSD()), 2) + "\n");
    FileWriteString(handle, "allow_recovery=" + BoolFlag(ActiveAllowRecovery()) + "\n");
    FileWriteString(handle, "take_profit_points=" + IntegerToString(ActiveTakeProfitPoints()) + "\n");
    FileWriteString(handle, "stop_loss_points=" + IntegerToString(ActiveStopLossPoints()) + "\n");
@@ -2593,27 +2656,34 @@ void DrawDashboard(int spread) {
    string status = (spread <= ActiveMaxSpread()) ? "SAFE" : "TOXIC SPREAD";
    string dashboard = DashboardControlActive() ? (DashboardEnabled ? "RUNNING" : "PAUSED") : "LOCAL INPUTS";
    string modelStatus = AiFilterActive() ? (ModelGateEnabled ? "ACTIVE" : "RECORDING") : "OFF";
+   string entryMode = InpUltraOpenMode ? "ULTRA OPEN" : "STRICT";
+   string recoveryMode = ActiveAllowRecovery() ? "ON" : "OFF";
 
-   Comment("--- RECOVERY SHIELD ---\n",
-           "Version: ", EA_BUILD_VERSION, " | Entry: ", InpUltraOpenMode ? "ULTRA OPEN" : "STRICT", "\n",
-           "Current Spread: ", spread, "\n",
-           "Max Allowed: ", ActiveMaxSpread(), "\n",
-           "Status: ", status, "\n",
-           "Dashboard: ", dashboard, "\n",
-           "Target: ", DoubleToString(EffectiveQuickTargetUSD(), 2),
-           " (", EffectiveTargetPoints(), "pts) | Loss cap: ",
-           DoubleToString(EffectiveMaxFloatingLossUSD(), 2), "\n",
-           "Peak: ", DoubleToString(CyclePeakProfit, 2),
-           " | Entry ATR: ", DoubleToString(EntryTimeframeAtrPoints(), 0), "\n",
-           "Account: ", AccountMoneyLabel, " x", DoubleToString(AccountMoneyScale, 0),
-           " | ATR: ", DoubleToString(CachedAtrPoints, 0), "\n",
-           "Recovery: ", ActiveAllowRecovery() ? "ON" : "OFF",
-           " | TP/SL: ", ResolveTakeProfitPoints(), "/", ResolveStopLossPoints(), "\n",
-           "Entry Trend: ", EntryTrendLabel(), " | ", LastEntryTrendReason, "\n",
-           "Scalps: ", ScalpClosedTrades, "/", InpScalpMaxClosedTrades,
-           " | Loss Streak: ", ConsecutiveLosses, "\n",
-           "Max Lot: ", DoubleToString(ActiveMaxLot(), 2), " | Same Side Max: ", ActiveMaxSameSidePositions(), "\n",
-           "AI Filter: ", modelStatus, " | Score: ", DoubleToString(LastModelScore, 3), "\n",
-           "EA Message: ", LastStatus, "\n",
-           "Turns: ", CurrentTurns);
+   // Built as one string because Comment() accepts at most 64 arguments.
+   string text = "--- RECOVERY SHIELD ---\n";
+   text += "Version: " + EA_BUILD_VERSION + " | Entry: " + entryMode + "\n";
+   text += "Current Spread: " + IntegerToString(spread) + "\n";
+   text += "Max Allowed: " + IntegerToString(ActiveMaxSpread()) + "\n";
+   text += "Status: " + status + "\n";
+   text += "Dashboard: " + dashboard + "\n";
+   text += "Target: " + DoubleToString(EffectiveQuickTargetUSD(), 2) +
+           " (" + IntegerToString(EffectiveTargetPoints()) + "pts) | Loss cap: " +
+           DoubleToString(EffectiveMaxFloatingLossUSD(), 2) + "\n";
+   text += "Peak: " + DoubleToString(CyclePeakProfit, 2) +
+           " | Entry ATR: " + DoubleToString(EntryTimeframeAtrPoints(), 0) + "\n";
+   text += "Account: " + AccountMoneyLabel + " x" + DoubleToString(AccountMoneyScale, 0) +
+           " | ATR: " + DoubleToString(CachedAtrPoints, 0) + "\n";
+   text += "Recovery: " + recoveryMode +
+           " | TP/SL: " + IntegerToString(ResolveTakeProfitPoints()) + "/" +
+           IntegerToString(ResolveStopLossPoints()) + "\n";
+   text += "Entry Trend: " + EntryTrendLabel() + " | " + LastEntryTrendReason + "\n";
+   text += "Scalps: " + IntegerToString(ScalpClosedTrades) + "/" + IntegerToString(InpScalpMaxClosedTrades) +
+           " | Loss Streak: " + IntegerToString(ConsecutiveLosses) + "\n";
+   text += "Max Lot: " + DoubleToString(ActiveMaxLot(), 2) +
+           " | Same Side Max: " + IntegerToString(ActiveMaxSameSidePositions()) + "\n";
+   text += "AI Filter: " + modelStatus + " | Score: " + DoubleToString(LastModelScore, 3) + "\n";
+   text += "EA Message: " + LastStatus + "\n";
+   text += "Turns: " + IntegerToString(CurrentTurns);
+
+   Comment(text);
 }

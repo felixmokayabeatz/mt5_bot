@@ -20,6 +20,10 @@ start.bat build      Compile the EA into MT5 first, then start
 start.bat lan        Bind 0.0.0.0 so another machine can reach it
 ```
 
+`start.bat lan` also sets `DJANGO_ALLOWED_HOSTS=*` when you have not set it yourself; without
+that Django answers every non-localhost address with HTTP 400. The dashboard has no login, so
+use LAN mode only on a network you trust.
+
 `DASHBOARD_HOST` and `DASHBOARD_PORT` still override the defaults if you set them first.
 Point MT5 shared files at the same common files directory used by the app.
 
@@ -146,7 +150,7 @@ The recovery logic now also has guardrails:
 - `Max same side` limits how many buys or sells can stack in one basket.
 - `Min same-side distance` blocks another buy/sell if it is too close to an existing position of the same type.
 - `InpMaxConsecutiveLosses`, `InpLossPauseSeconds`, and `InpLossSideCooldownSeconds` pause the bot after stop-loss streaks.
-- `Max loss USD` is an optional dashboard emergency close. Keep it `0` to disable it. (Before `v1.0.7_11` a dashboard `0` silently fell back to the EA input instead of disabling.)
+- `Max loss USD` is the dashboard emergency close. A dashboard `0` no longer falls back to the EA input (that was fixed in `v1.0.7_11`), but with the default `InpMaxLossToTargetRatio=1.5` the EA still enforces a cap of effective target x 1.5 so the downside stays proportional to the upside. To run with no loss cap at all, set both `Max loss USD` to `0` and `InpMaxLossToTargetRatio` to `0`.
 
 For aggressive demo scalping, use a small quick target such as `0.50` to `2.00`, a low initial lot, and a realistic max spread for the symbol.
 
@@ -176,11 +180,13 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.7` and the current EA build is `v1.0.7_11`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_11.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.7` and the current EA build is `v1.0.7_12`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_12.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 
 ## AI training
+
+Every finished basket is written to `recovery_shield_cycles.csv`, whether the EA closed it (`quick_target`, `profit_lock`, `max_loss`, `timeout`, `dashboard_close_all`) or it disappeared on its own through a broker TP/SL, a trailing stop, or a manual close (`external_close`, profit taken from the last basket value the EA saw). Rows without a readable `exit_profit` are skipped by the trainer, never counted as wins.
 
 The trainer writes `recovery_shield_model.txt` atomically so the EA does not read a partial model. When enough rows exist, it trains a profit-weighted logistic filter and, if there is enough history for validation, chooses the decision threshold from recent closed cycles. Set `MODEL_THRESHOLD` to force your own threshold instead.
 
@@ -199,12 +205,38 @@ $env:MT5_COMMON_FILES_DIR = "$env:APPDATA\MetaQuotes\Terminal\Common\Files"
 
 Keep the dashboard behind a firewall, VPN, or reverse proxy with authentication. The dashboard can start, pause, and close positions, so do not expose it directly to the public internet.
 
+Two things to know when `DJANGO_DEBUG=0`:
+
+- Cookies default to secure-only. If you serve the dashboard over plain `http://` (no HTTPS reverse proxy), also set `DJANGO_SESSION_COOKIE_SECURE=0` and `DJANGO_CSRF_COOKIE_SECURE=0`, otherwise browsers drop the CSRF cookie and every button press fails with a 403.
+- `runserver` stops serving static files, so the page would load unstyled. The command below passes `--insecure` to keep serving them, which is fine for this private single-user tool. A real web server in front of Django is the alternative.
+
 For a quick private run:
 
 ```powershell
 .\mq5_v_env\Scripts\python.exe manage.py migrate
 .\mq5_v_env\Scripts\python.exe manage.py collectstatic --noinput
-.\mq5_v_env\Scripts\python.exe manage.py runserver 127.0.0.1:8000 --noreload
+.\mq5_v_env\Scripts\python.exe manage.py runserver 127.0.0.1:8000 --noreload --insecure
 ```
 
 Use a process manager on the server so both MT5 and the dashboard restart after reboots.
+
+## Changelog
+
+### v1.0.7_12
+
+EA (`volatilty.mq5`, rebuild with `start.bat build` or `build_ea.ps1`):
+
+- Baskets closed by the broker (TP/SL, trailing stop) or by hand are now logged as cycles (`external_close`). Before, only EA-forced exits were recorded, so the AI trained on a biased sample and cycle state went stale.
+- A failed close no longer resets the cycle or acknowledges a dashboard close-all. The EA keeps the command pending and retries, and logs the cycle once instead of once per retry.
+- A cycle adopted after an EA restart no longer writes an all-zero training row.
+- The close-all acknowledgement wrote account-currency amounts back into the USD control file, which multiplied the targets by 100 on cent accounts. It now writes USD.
+- The on-chart panel is built as one string. The old `Comment()` call had 71 arguments and MQL5 allows 64.
+
+Dashboard and tooling:
+
+- `NaN`, `Infinity` and huge numbers in the settings form are rejected instead of crashing the page or being written to the control file.
+- A failed or timed-out model training now shows the reason on the page, and runs from the project folder regardless of where the server was started.
+- Trainer ignores rows with a missing, `nan` or `inf` `exit_profit`.
+- `start.bat`: the browser now opens as soon as the server answers (a stray `^` in the PowerShell wait loop made it always wait 10 seconds); `lan` mode works.
+- `build_ea.ps1 -Watch` survives a compile error instead of exiting, and refuses to treat a stale EX5 as a fresh build when MetaEditor writes no log.
+- `requirements.txt` is plain UTF-8 (it was UTF-16). Version labels in the page come from the backend instead of hard-coded strings, and empty fields show `-` instead of invented numbers.

@@ -12,7 +12,7 @@ MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
 APP_VERSION = "v1.0.7"
-EA_BUILD_NUMBER = "11"
+EA_BUILD_NUMBER = "12"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 
 DEFAULT_CONTROL = {
@@ -169,7 +169,13 @@ def safe_write_text(target, text):
         os.replace(tmp, target)
     except OSError as exc:
         debug_log(f"atomic replace failed, writing directly: {target} {exc}")
-        target.write_text(text, encoding="utf-8")
+        try:
+            target.write_text(text, encoding="utf-8")
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def read_control():
@@ -273,7 +279,8 @@ def csv_data_row_count(path):
         return cached["count"]
 
     try:
-        line_count = sum(1 for _ in path.open("r", encoding="utf-8", errors="ignore"))
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            line_count = sum(1 for _ in handle)
     except OSError:
         return 0
 
@@ -289,6 +296,8 @@ def write_control(values):
 
     clean = DEFAULT_CONTROL.copy()
     clean.update(values)
+    clean.pop("ack", None)
+    clean.pop("ack_at", None)
     clean["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     clean["updated_by"] = "django"
 
@@ -312,10 +321,11 @@ def apply_control_preset(values, preset_name):
 
 
 def file_debug_info(path):
-    if not path.exists():
+    try:
+        stat = path.stat()
+    except OSError:
         return {"exists": False, "path": str(path), "size": 0, "modified": "-"}
 
-    stat = path.stat()
     modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
     return {
         "exists": True,
@@ -338,16 +348,20 @@ def file_info_bundle(paths):
 
 def validate_control(post_data):
     return {
-        "initial_lot": decimal_value(post_data, "initial_lot", minimum=Decimal("0.01")),
+        "initial_lot": decimal_value(
+            post_data, "initial_lot", minimum=Decimal("0.01"), maximum=Decimal("1000")
+        ),
         "zone_height": int_value(post_data, "zone_height", minimum=1, maximum=100000),
-        "multiplier": decimal_value(post_data, "multiplier", minimum=Decimal("1.0")),
+        "multiplier": decimal_value(
+            post_data, "multiplier", minimum=Decimal("1.0"), maximum=Decimal("100")
+        ),
         "target_usd": decimal_value(post_data, "target_usd", minimum=Decimal("0.01")),
         "quick_target_usd": decimal_value(post_data, "quick_target_usd", minimum=Decimal("0")),
         "max_loss_usd": decimal_value(post_data, "max_loss_usd", minimum=Decimal("0")),
         "allow_recovery": int_value(post_data, "allow_recovery", minimum=0, maximum=1),
         "take_profit_points": int_value(post_data, "take_profit_points", minimum=0, maximum=100000),
         "stop_loss_points": int_value(post_data, "stop_loss_points", minimum=0, maximum=100000),
-        "max_lot": decimal_value(post_data, "max_lot", minimum=Decimal("0")),
+        "max_lot": decimal_value(post_data, "max_lot", minimum=Decimal("0"), maximum=Decimal("1000")),
         "max_same_side": int_value(post_data, "max_same_side", minimum=0, maximum=20),
         "min_same_side_distance": int_value(
             post_data, "min_same_side_distance", minimum=0, maximum=100000
@@ -357,15 +371,25 @@ def validate_control(post_data):
     }
 
 
-def decimal_value(post_data, field, minimum):
+DECIMAL_MAXIMUM = Decimal("1000000")
+
+
+def decimal_value(post_data, field, minimum, maximum=DECIMAL_MAXIMUM):
     raw = str(post_data.get(field, "")).strip()
+    label = field.replace("_", " ")
     try:
         value = Decimal(raw)
     except InvalidOperation as exc:
-        raise SettingsError(f"{field.replace('_', ' ')} must be a number.") from exc
+        raise SettingsError(f"{label} must be a number.") from exc
+
+    if not value.is_finite():
+        raise SettingsError(f"{label} must be a finite number.")
 
     if value < minimum:
-        raise SettingsError(f"{field.replace('_', ' ')} must be at least {minimum}.")
+        raise SettingsError(f"{label} must be at least {minimum}.")
+
+    if value > maximum:
+        raise SettingsError(f"{label} must be at most {maximum}.")
 
     return format(value.normalize(), "f")
 
