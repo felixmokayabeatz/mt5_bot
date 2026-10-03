@@ -31,6 +31,16 @@ TRAINING_TIMEOUT_SECONDS = 300
 EMERGENCY_ACTIONS = {"pause", "close_all"}
 TRAINER_SCRIPT = os.path.join("scripts", "train_model.py")
 
+def store_control(request, control):
+    try:
+        write_control(control)
+    except OSError as exc:
+        debug_log(f"control write failed: {exc}")
+        messages.error(request, f"Could not write the control file: {exc}")
+        return False
+
+    return True
+
 def dashboard(request):
     control = read_control()
 
@@ -48,7 +58,9 @@ def dashboard(request):
 
         if action in {"quick_safe", "quick_now"}:
             control = apply_control_preset(control, action)
-            write_control(control)
+            if not store_control(request, control):
+                return redirect("dashboard")
+
             if action == "quick_now":
                 messages.warning(request, "Quick Now preset applied. EA start command sent.")
             else:
@@ -70,19 +82,22 @@ def dashboard(request):
         if action == "start":
             control["enabled"] = "1"
             control["close_all"] = "0"
-            messages.success(request, "EA start command sent.")
+            notify, text = messages.success, "EA start command sent."
         elif action == "pause":
             control["enabled"] = "0"
             control["close_all"] = "0"
-            messages.success(request, "EA pause command sent.")
+            notify, text = messages.success, "EA pause command sent."
         elif action == "close_all":
             control["enabled"] = "0"
             control["close_all"] = "1"
-            messages.warning(request, "Close-all command sent.")
+            notify, text = messages.warning, "Close-all command sent."
         else:
-            messages.success(request, "Settings saved.")
+            notify, text = messages.success, "Settings saved."
 
-        write_control(control)
+        if not store_control(request, control):
+            return redirect("dashboard")
+
+        notify(request, text)
         return redirect("dashboard")
 
     debug_log("dashboard opened")

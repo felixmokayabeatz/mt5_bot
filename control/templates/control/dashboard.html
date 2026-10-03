@@ -200,6 +200,14 @@
             <dd id="quick-target">{{ status.quick_target_usd|default:"-" }}</dd>
           </div>
           <div>
+            <dt>Requested quick target</dt>
+            <dd id="requested-quick-target">{{ status.requested_quick_target_usd|default:"-" }}</dd>
+          </div>
+          <div>
+            <dt>Target points</dt>
+            <dd id="target-points">{{ status.effective_target_points|default:"-" }}</dd>
+          </div>
+          <div>
             <dt>Max loss</dt>
             <dd id="max-loss">{{ status.max_loss_usd|default:"-" }}</dd>
           </div>
@@ -216,8 +224,8 @@
             <dd id="account-currency">{{ status.account_currency|default:"-" }}</dd>
           </div>
           <div>
-            <dt>ATR points</dt>
-            <dd id="atr-points">{{ status.atr_points|default:"-" }}</dd>
+            <dt>Entry ATR points</dt>
+            <dd id="atr-points">{% firstof status.entry_atr_points status.atr_points "-" %}</dd>
           </div>
           <div>
             <dt>Max lot</dt>

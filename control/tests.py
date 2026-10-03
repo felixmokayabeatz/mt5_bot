@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -11,6 +12,9 @@ from django.contrib.staticfiles import finders
 from django.test import SimpleTestCase, TestCase
 
 from .services import (
+    APP_VERSION,
+    EA_BUILD_NUMBER,
+    EA_VERSION,
     SettingsError,
     apply_control_preset,
     common_files_dir,
@@ -105,7 +109,7 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(read_version()["app_version"], "v1.0.7")
-            self.assertEqual(read_version()["ea_version"], "v1.0.7_13")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_14")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -278,14 +282,14 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
 
         response = self.client.get("/")
 
-        self.assertContains(response, "v1.0.7_13")
+        self.assertContains(response, "v1.0.7_14")
 
     def test_status_api_reports_the_compiled_version(self):
         self.use_temp_common_dir()
 
         payload = self.client.get("/api/status/").json()
 
-        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_13")
+        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_14")
         self.assertEqual(payload["runtime_state"]["badge_state"], "paused")
 
     def test_training_failure_message_uses_last_trainer_line(self):
@@ -314,8 +318,8 @@ class StaleStatusTests(SimpleTestCase):
     def state(self, enabled, age):
         return runtime_state(
             {"enabled": enabled},
-            {"ea_version": "v1.0.7_13"},
-            {"ea_version": "v1.0.7_13"},
+            {"ea_version": "v1.0.7_14"},
+            {"ea_version": "v1.0.7_14"},
             status_age_seconds=age,
         )
 
@@ -445,3 +449,100 @@ class TrainerRowFilterTests(CommonFilesDirMixin, SimpleTestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["label"], 1)
+
+
+class DashboardTileTests(CommonFilesDirMixin, TestCase):
+    def write_status(self, directory, text):
+        (directory / "recovery_shield_status.txt").write_text(text, encoding="utf-8")
+
+    def test_atr_tile_prefers_the_entry_timeframe_value(self):
+        directory = self.use_temp_common_dir()
+        self.write_status(directory, "atr_points=999.0\nentry_atr_points=123.0\n")
+
+        response = self.client.get("/")
+
+        self.assertContains(response, '<dd id="atr-points">123.0</dd>')
+
+    def test_atr_tile_falls_back_to_the_chart_value(self):
+        directory = self.use_temp_common_dir()
+        self.write_status(directory, "atr_points=77.0\n")
+
+        response = self.client.get("/")
+
+        self.assertContains(response, '<dd id="atr-points">77.0</dd>')
+
+    def test_requested_target_and_target_points_are_shown(self):
+        directory = self.use_temp_common_dir()
+        self.write_status(
+            directory,
+            "quick_target_usd=0.72\nrequested_quick_target_usd=0.25\neffective_target_points=310\n",
+        )
+
+        response = self.client.get("/")
+
+        self.assertContains(response, '<dd id="quick-target">0.72</dd>')
+        self.assertContains(response, '<dd id="requested-quick-target">0.25</dd>')
+        self.assertContains(response, '<dd id="target-points">310</dd>')
+
+    def test_tiles_show_a_dash_before_the_ea_reports(self):
+        self.use_temp_common_dir()
+
+        response = self.client.get("/")
+
+        self.assertContains(response, '<dd id="requested-quick-target">-</dd>')
+        self.assertContains(response, '<dd id="target-points">-</dd>')
+
+
+class ControlWriteFailureTests(CommonFilesDirMixin, TestCase):
+    def test_unwritable_control_file_becomes_a_page_message(self):
+        self.use_temp_common_dir()
+
+        with mock.patch.object(views, "write_control", side_effect=PermissionError("denied")):
+            response = self.client.post("/", dict(VALID_FORM, action="start"), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Could not write the control file")
+        self.assertNotContains(response, "EA start command sent.")
+
+    def test_failed_preset_write_does_not_claim_success(self):
+        self.use_temp_common_dir()
+
+        with mock.patch.object(views, "write_control", side_effect=OSError("disk full")):
+            response = self.client.post("/", {"action": "quick_now"}, follow=True)
+
+        self.assertContains(response, "Could not write the control file")
+        self.assertNotContains(response, "preset applied")
+
+
+class TrainerWeightTests(SimpleTestCase):
+    def test_class_weights_use_the_real_loss_count_when_there_are_no_wins(self):
+        trainer = TrainerTests.load_trainer()
+        rows = [{"features": [1.0], "label": 0, "profit": -0.2} for _ in range(4)]
+
+        weights = trainer.build_sample_weights(rows)
+
+        self.assertEqual(len(weights), 4)
+        for weight in weights:
+            self.assertAlmostEqual(weight, 1.0)
+
+
+class SourceHygieneTests(SimpleTestCase):
+    @staticmethod
+    def ea_source():
+        return (Path(settings.BASE_DIR) / "volatilty.mq5").read_text(encoding="utf-8")
+
+    def test_ea_source_has_no_comments(self):
+        source = self.ea_source()
+
+        self.assertNotIn("//", source)
+        self.assertNotIn("/*", source)
+
+    def test_ea_and_dashboard_versions_match(self):
+        source = self.ea_source()
+        build = re.search(r"#define\s+EA_BUILD_NUMBER\s+(\d+)", source).group(1)
+        app = re.search(r'#define\s+EA_APP_VERSION\s+"([^"]+)"', source).group(1)
+        full = re.search(r'#define\s+EA_BUILD_VERSION\s+"([^"]+)"', source).group(1)
+
+        self.assertEqual(build, EA_BUILD_NUMBER)
+        self.assertEqual(app, APP_VERSION)
+        self.assertEqual(full, EA_VERSION)

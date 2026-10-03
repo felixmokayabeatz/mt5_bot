@@ -180,7 +180,7 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.7` and the current EA build is `v1.0.7_13`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_13.ex5`. The repository does not ship a compiled `volatilty.ex5`; run `start.bat build` or `build_ea.ps1` to produce one that matches the source. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.7` and the current EA build is `v1.0.7_14`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_14.ex5`. The repository does not ship a compiled `volatilty.ex5`; run `start.bat build` or `build_ea.ps1` to produce one that matches the source. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 
@@ -221,6 +221,23 @@ For a quick private run:
 Use a process manager on the server so both MT5 and the dashboard restart after reboots.
 
 ## Changelog
+
+### v1.0.7_14
+
+EA (`volatilty.mq5`, rebuild and reattach it; the dashboard shows a version mismatch until you do):
+
+- Closing positions no longer depends on the symbol being fully open for trading. Before, a symbol in close-only, long-only or short-only mode stopped the whole engine, so the profit, loss-cap and timeout exits and Close All never ran. Exits now need only the terminal, EA, account and expert permissions and a symbol that is not disabled. New entries and recovery orders still need full trading.
+- `InpMaxCycleTime` of `0` or less now disables the timeout. Before, `0` closed every basket the moment it opened.
+- Every remaining comment was removed, including the trailing text on `input` lines. MetaTrader labels each setting with that text, so the properties dialog now shows the raw input names such as `InpAtrTpFactor`.
+
+Dashboard and tooling:
+
+- The ATR tile is now `Entry ATR points` and shows `entry_atr_points`, the value that actually sizes the stops, instead of the chart timeframe ATR. New `Requested quick target` and `Target points` tiles show the requested and effective targets that this README already described.
+- A control file that cannot be written (permissions, locked folder) now shows an error on the page instead of an HTTP 500, and no success message is shown for a command that was not saved.
+- Trainer class weights use the real loss count when a set has no wins.
+- `start.bat` prints the real shared folder and honors `MT5_COMMON_FILES_DIR` instead of printing a literal `%APPDATA%`. The failed install message mentions that Django 6 needs Python 3.12 or newer.
+- `.gitignore` now ignores `staticfiles/` and `*.ex5`. The stray `volatilty.ex5` that came in the archive was removed; build one from source.
+- New tests cover the tiles, control write failures, trainer weights, comment-free EA source, and EA and dashboard version agreement.
 
 ### v1.0.7_13
 

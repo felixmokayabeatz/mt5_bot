@@ -96,6 +96,8 @@
       );
       setText("ultra-open", flagLabel(status.ultra_open_mode, "Ultra open", "Strict"));
       setText("quick-target", status.quick_target_usd || "-");
+      setText("requested-quick-target", status.requested_quick_target_usd || "-");
+      setText("target-points", status.effective_target_points || "-");
       setText("max-loss", status.max_loss_usd || "-");
       setText("allow-recovery", flagLabel(status.allow_recovery, "On", "Off"));
       setText(
@@ -109,7 +111,7 @@
           ? `${status.account_currency || "-"} (cent x${Number.parseFloat(status.money_scale)})`
           : status.account_currency || "-"
       );
-      setText("atr-points", status.atr_points || "-");
+      setText("atr-points", status.entry_atr_points || status.atr_points || "-");
       setText("max-lot", status.max_lot || "-");
       setText("max-same-side", status.max_same_side || "-");
       setText("same-side-distance", status.min_same_side_distance || "-");

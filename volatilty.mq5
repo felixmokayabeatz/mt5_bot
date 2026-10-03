@@ -3,8 +3,8 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 13
-#define EA_BUILD_VERSION "v1.0.7_13"
+#define EA_BUILD_NUMBER 14
+#define EA_BUILD_VERSION "v1.0.7_14"
 #define MODEL_FEATURE_COUNT 10
 #define ORDER_FAILURE_BACKOFF_SECONDS 5
 #define CLOSE_RETRY_SECONDS 2
@@ -12,81 +12,81 @@
 #define FAILURE_LOG_SECONDS 10
 
 input group "Recovery Settings"
-input double InitialLot   = 0.01;      // Starting Lot Size
-input int    ZoneHeight   = 500;       // Distance between Buy and Sell (Points)
-input double Multiplier   = 1.2;       // Recovery Multiplier (e.g. 1.2x)
-input double TargetUSD    = 1.0;       // Close all when Net Profit reaches this $ amount
-input int    MaxTurns     = 1;         // Max number of cycle trades; 1 disables recovery by position count
+input double InitialLot   = 0.01;
+input int    ZoneHeight   = 500;
+input double Multiplier   = 1.2;
+input double TargetUSD    = 1.0;
+input int    MaxTurns     = 1;
 
 input group "Symbol and Account"
-input bool   InpRestrictToGold = true;              // Refuse to start on non-gold charts
-input string InpGoldSymbols = "XAU,GOLD";           // Comma separated symbol fragments treated as gold
-input double InpMoneyScaleOverride = 0.0;           // 0 auto-detects cent accounts; else units per 1 USD
+input bool   InpRestrictToGold = true;
+input string InpGoldSymbols = "XAU,GOLD";
+input double InpMoneyScaleOverride = 0.0;
 
 input group "The Shields (Safety Filters)"
-input int    InpMaxSpread    = 300;    // Block new cycles above this spread
-input int    InpMaxCycleTime = 900;    // Kill the whole cycle if stuck (Seconds)
+input int    InpMaxSpread    = 300;
+input int    InpMaxCycleTime = 900;
 input int    InpMagic        = 999999;
 
 input group "Aggressive Profit Capture"
-input bool   InpAggressiveMode = true;              // Close small basket profits quickly
-input double InpQuickBasketProfitUSD = 0.25;        // Fast close-all target; 0 disables
-input double InpMaxFloatingLossUSD = 3.0;           // Emergency basket loss cap; 0 disables
-input bool   InpUseProfitLock = true;               // Close a winner that starts giving profit back
-input double InpProfitLockTriggerUSD = 0.15;        // Arm the lock once basket profit passes this
-input double InpProfitLockGiveBackUSD = 0.08;       // Close if profit drops this far below its peak
+input bool   InpAggressiveMode = true;
+input double InpQuickBasketProfitUSD = 0.25;
+input double InpMaxFloatingLossUSD = 3.0;
+input bool   InpUseProfitLock = true;
+input double InpProfitLockTriggerUSD = 0.15;
+input double InpProfitLockGiveBackUSD = 0.08;
 
 input group "Spread Economics"
-input bool   InpScaleTargetsToSpread = true;        // Raise tiny targets until they clear the spread
-input double InpTargetSpreadMultiple = 3.0;         // Profit target must be at least spread x this
-input double InpMaxLossToTargetRatio = 1.5;         // Cap the loss stop at target x this
-input bool   InpUseTrailingStop = true;             // Move broker stops as price runs in our favour
-input int    InpBreakEvenPoints = 60;               // Profit points before the stop moves to entry
-input int    InpBreakEvenLockPoints = 10;           // Points locked in at break even
-input int    InpTrailingStartPoints = 90;           // Profit points before trailing starts
-input int    InpTrailingStopPoints = 45;            // Trailing distance kept behind price
-input bool   InpAllowRecovery = false;              // Off by default to avoid stacking losses
-input bool   InpUseHardStops = true;                // Attach SL/TP to orders
-input int    InpTakeProfitPoints = 200;             // Fixed per-position TP in points; 0 disables
-input int    InpStopLossPoints = 300;               // Fixed per-position SL in points; 0 disables
-input bool   InpUseAtrStops = true;                 // Size TP/SL from ATR instead of fixed points
-input double InpAtrTpFactor = 1.5;                  // TP = ATR x this
-input double InpAtrSlFactor = 1.5;                  // SL = ATR x this
-input int    InpAtrMinStopPoints = 30;              // Floor for ATR derived stops
-input int    InpAtrMaxStopPoints = 3000;            // Ceiling for ATR derived stops
+input bool   InpScaleTargetsToSpread = true;
+input double InpTargetSpreadMultiple = 3.0;
+input double InpMaxLossToTargetRatio = 1.5;
+input bool   InpUseTrailingStop = true;
+input int    InpBreakEvenPoints = 60;
+input int    InpBreakEvenLockPoints = 10;
+input int    InpTrailingStartPoints = 90;
+input int    InpTrailingStopPoints = 45;
+input bool   InpAllowRecovery = false;
+input bool   InpUseHardStops = true;
+input int    InpTakeProfitPoints = 200;
+input int    InpStopLossPoints = 300;
+input bool   InpUseAtrStops = true;
+input double InpAtrTpFactor = 1.5;
+input double InpAtrSlFactor = 1.5;
+input int    InpAtrMinStopPoints = 30;
+input int    InpAtrMaxStopPoints = 3000;
 
 input group "Entry Signal"
-input bool   InpUseTrendEntry = true;               // Use the fast trend engine
-input bool   InpBlockCounterTrendRecovery = true;   // Do not add recovery trades against strong MA trend
-input int    InpTrendFilterPoints = 50;             // MA delta needed to call trend strong
-input ENUM_TIMEFRAMES InpEntryTrendTimeframe = PERIOD_M1; // Fast entry trend timeframe
-input int    InpEntryTrendLookbackBars = 2;         // Closed bars used for fast entry direction
-input int    InpEntryMinMovePoints = 8;             // Minimum fast move before opening a trend trade
-input int    InpEntryMinBodyPoints = 1;             // Minimum latest closed candle body
-input int    InpEntryFastMaPeriod = 5;              // Fast MA for entry trend
-input int    InpEntrySlowMaPeriod = 13;             // Slow MA for entry trend
-input int    InpEntryRsiPeriod = 7;                 // RSI used to avoid exhausted entries
+input bool   InpUseTrendEntry = true;
+input bool   InpBlockCounterTrendRecovery = true;
+input int    InpTrendFilterPoints = 50;
+input ENUM_TIMEFRAMES InpEntryTrendTimeframe = PERIOD_M1;
+input int    InpEntryTrendLookbackBars = 2;
+input int    InpEntryMinMovePoints = 8;
+input int    InpEntryMinBodyPoints = 1;
+input int    InpEntryFastMaPeriod = 5;
+input int    InpEntrySlowMaPeriod = 13;
+input int    InpEntryRsiPeriod = 7;
 
 input group "Ultra Open Mode"
-input bool   InpUltraOpenMode = true;               // Take any small confirmed push instead of waiting
-input int    InpUltraMinMovePoints = 4;             // Tiny move that still counts as direction
-input int    InpUltraMinBodyPoints = 1;             // Tiny candle body that still counts
-input double InpUltraSpreadMoveFactor = 0.05;       // How much spread inflates the move requirement
-input double InpUltraRsiBuyBlock = 97.0;            // Only block buys this far into overbought
-input double InpUltraRsiSellBlock = 3.0;            // Only block sells this far into oversold
+input bool   InpUltraOpenMode = true;
+input int    InpUltraMinMovePoints = 4;
+input int    InpUltraMinBodyPoints = 1;
+input double InpUltraSpreadMoveFactor = 0.05;
+input double InpUltraRsiBuyBlock = 97.0;
+input double InpUltraRsiSellBlock = 3.0;
 
 input group "Risk Throttles"
-input bool   InpFastScalpMode = true;               // Allow fast continuation scalps
-input double InpScalpMaxSpreadTpRatio = 0.50;       // Max spread as a ratio of scalp TP points
-input int    InpScalpMaxClosedTrades = 200;         // Pause after N closed scalp trades per window
-input int    InpScalpWindowSeconds = 900;           // Scalp burst accounting window
-input int    InpMaxConsecutiveLosses = 4;           // Pause after this many losing closes
-input int    InpLossPauseSeconds = 20;              // Pause all entries after a loss streak
-input int    InpLossSideCooldownSeconds = 20;       // Pause the stopped side after a loss
-input int    InpMinSecondsBetweenTrades = 1;        // Trade throttle to prevent duplicate entries
-input double InpMaxRecoveryLot = 0.05;              // Cap recovery lot; 0 disables
-input int    InpMaxSameSidePositions = 2;           // Max buy or sell positions per cycle; 0 disables
-input int    InpMinSameSideDistancePoints = 150;    // Block same-side entries too close to existing positions
+input bool   InpFastScalpMode = true;
+input double InpScalpMaxSpreadTpRatio = 0.50;
+input int    InpScalpMaxClosedTrades = 200;
+input int    InpScalpWindowSeconds = 900;
+input int    InpMaxConsecutiveLosses = 4;
+input int    InpLossPauseSeconds = 20;
+input int    InpLossSideCooldownSeconds = 20;
+input int    InpMinSecondsBetweenTrades = 1;
+input double InpMaxRecoveryLot = 0.05;
+input int    InpMaxSameSidePositions = 2;
+input int    InpMinSameSideDistancePoints = 150;
 
 input group "Django Dashboard Control"
 input bool   InpUseDashboardControl = true;
@@ -98,15 +98,15 @@ input bool   InpEnableCsvLogging    = true;
 input string InpEventLogFile        = "recovery_shield_events.csv";
 input string InpCycleLogFile        = "recovery_shield_cycles.csv";
 input bool   InpUseAiFilter         = true;
-input bool   InpUseAiFilterInBacktest = false;  // Keep the model gate off while backtesting
+input bool   InpUseAiFilterInBacktest = false;
 input string InpModelFile           = "recovery_shield_model.txt";
 input double InpDefaultModelThreshold = 0.55;
 
 input group "Performance"
-input int    InpTimerMilliseconds   = 100;      // Engine heartbeat between ticks
-input int    InpControlPollSeconds  = 1;        // Read dashboard commands at most once per N seconds
-input int    InpStatusWriteSeconds  = 1;        // Write dashboard status at most once per N seconds
-input int    InpTradeDeviationPoints = 30;      // Max price deviation used by CTrade
+input int    InpTimerMilliseconds   = 100;
+input int    InpControlPollSeconds  = 1;
+input int    InpStatusWriteSeconds  = 1;
+input int    InpTradeDeviationPoints = 30;
 
 CTrade         trade;
 CPositionInfo  m_position;
@@ -530,7 +530,7 @@ void RunEngine(string eventSource)
 
    DrawDashboard(spread);
 
-   if(!TradingAllowed())
+   if(!ExitsAllowed())
    {
       SetStatus("Trading blocked by terminal, EA settings, account, or symbol mode.");
       DrawDashboard(spread);
@@ -612,7 +612,7 @@ void RunEngine(string eventSource)
    }
 
    if(hasPosition) {
-      bool timeOut = (TimeCurrent() - CycleStartTime >= InpMaxCycleTime);
+      bool timeOut = (InpMaxCycleTime > 0 && TimeCurrent() - CycleStartTime >= InpMaxCycleTime);
       bool hitQuickTarget = (InpAggressiveMode &&
                              EffectiveQuickTargetUSD() > 0.0 &&
                              totalProfit >= EffectiveQuickTargetUSD());
@@ -648,6 +648,14 @@ void RunEngine(string eventSource)
       if(!DashboardEnabled)
       {
          SetStatus("Paused. Click Start EA in the Django dashboard.");
+         DrawDashboard(spread);
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
+      if(!EntriesAllowed())
+      {
+         SetStatus("Waiting: the symbol does not allow new trades right now.");
          DrawDashboard(spread);
          WriteDashboardStatus(spread, hasPosition, totalProfit);
          return;
@@ -755,7 +763,7 @@ void RunEngine(string eventSource)
          return;
       }
 
-      if(CanTradeNow())
+      if(EntriesAllowed() && CanTradeNow())
       {
          if(bid <= LowerLevel && lastType == POSITION_TYPE_BUY)
          {
@@ -2609,7 +2617,7 @@ int VolumeDigits(double step)
    return StringLen(text) - dotAt - 1;
 }
 
-bool TradingAllowed()
+bool ExitsAllowed()
 {
    bool terminalAllowed = (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
    bool eaAllowed       = (bool)MQLInfoInteger(MQL_TRADE_ALLOWED);
@@ -2621,7 +2629,15 @@ bool TradingAllowed()
           eaAllowed &&
           accountAllowed &&
           expertAllowed &&
-          symbolMode == SYMBOL_TRADE_MODE_FULL);
+          symbolMode != SYMBOL_TRADE_MODE_DISABLED);
+}
+
+bool EntriesAllowed()
+{
+   if(!ExitsAllowed())
+      return false;
+
+   return(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_FULL);
 }
 
 bool TradeSucceeded()

@@ -38,7 +38,7 @@ if not exist "!PYTHON_EXE!" (
     "!PYTHON_EXE!" -m pip install --disable-pip-version-check --quiet --upgrade pip
     "!PYTHON_EXE!" -m pip install --disable-pip-version-check --quiet -r "%PROJECT_ROOT%requirements.txt"
     if errorlevel 1 (
-      echo [start] Requirement install failed. Check your internet connection.
+      echo [start] Requirement install failed. Check your internet connection and make sure Python 3.12 or newer is installed, because Django 6 needs it.
       pause
       exit /b 1
     )
@@ -65,6 +65,9 @@ set "BROWSER_HOST=%DASHBOARD_HOST%"
 if "%DASHBOARD_HOST%"=="0.0.0.0" set "BROWSER_HOST=127.0.0.1"
 set "DASHBOARD_URL=http://!BROWSER_HOST!:%DASHBOARD_PORT%/"
 
+set "SHARED_DIR=%APPDATA%\MetaQuotes\Terminal\Common\Files"
+if defined MT5_COMMON_FILES_DIR set "SHARED_DIR=%MT5_COMMON_FILES_DIR%"
+
 start "" /min powershell -NoProfile -Command ^
   "for ($i=0; $i -lt 40; $i++) { try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 '!DASHBOARD_URL!' | Out-Null; break } catch { Start-Sleep -Milliseconds 250 } }; Start-Process '!DASHBOARD_URL!'"
 
@@ -72,7 +75,7 @@ echo.
 echo   Recovery Shield dashboard
 echo   ------------------------------------------------
 echo   URL       !DASHBOARD_URL!
-echo   Shared    %%APPDATA%%\MetaQuotes\Terminal\Common\Files
+echo   Shared    !SHARED_DIR!
 echo   Stop      Ctrl+C
 echo.
 

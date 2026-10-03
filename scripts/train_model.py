@@ -206,8 +206,9 @@ def median(values):
     return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
 
 def build_sample_weights(rows):
-    wins = max(sum(1 for row in rows if row["label"] == 1), 1)
-    losses = max(len(rows) - wins, 1)
+    win_count = sum(1 for row in rows if row["label"] == 1)
+    wins = max(win_count, 1)
+    losses = max(len(rows) - win_count, 1)
     abs_profits = [abs(row["profit"]) for row in rows if abs(row["profit"]) > 0.0]
     median_abs_profit = max(median(abs_profits), 0.01)
     weights = []
