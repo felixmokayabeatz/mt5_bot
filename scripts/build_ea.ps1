@@ -356,8 +356,6 @@ function Invoke-MetaEditorCompile([string]$MetaEditorPath, [string]$TargetSource
   }
 
   if ($null -eq $errorCount) {
-    # No usable compile log, so the EX5 on disk is the only evidence. Make sure
-    # it was written by this run and is not a leftover from an older build.
     $compiledItem = Get-Item -LiteralPath $compiledPath
     if ($compiledItem.LastWriteTimeUtc -lt $compileStartedUtc.AddSeconds(-2)) {
       throw "MetaEditor wrote no compile log and the EX5 is older than this compile run, so the build probably failed: $compiledPath"
@@ -416,8 +414,6 @@ do {
   try {
     Invoke-EaBuild
   } catch {
-    # Write-Error would be terminating under $ErrorActionPreference = "Stop"
-    # and kill the -Watch loop on the first compile error.
     Write-Host ("ERROR: " + $_.Exception.Message) -ForegroundColor Red
     if (!$Watch) {
       exit 1

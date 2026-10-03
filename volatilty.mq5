@@ -1,17 +1,16 @@
-//+------------------------------------------------------------------+
-//|                                     RecoveryZone_Shielded_V1.mq5 |
-//|                                  Copyright 2026, Gemini Academic |
-//+------------------------------------------------------------------+
 #property strict
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 12
-#define EA_BUILD_VERSION "v1.0.7_12"
+#define EA_BUILD_NUMBER 13
+#define EA_BUILD_VERSION "v1.0.7_13"
 #define MODEL_FEATURE_COUNT 10
+#define ORDER_FAILURE_BACKOFF_SECONDS 5
+#define CLOSE_RETRY_SECONDS 2
+#define TRAIL_RETRY_SECONDS 2
+#define FAILURE_LOG_SECONDS 10
 
-//--- Input Parameters
 input group "Recovery Settings"
 input double InitialLot   = 0.01;      // Starting Lot Size
 input int    ZoneHeight   = 500;       // Distance between Buy and Sell (Points)
@@ -109,7 +108,6 @@ input int    InpControlPollSeconds  = 1;        // Read dashboard commands at mo
 input int    InpStatusWriteSeconds  = 1;        // Write dashboard status at most once per N seconds
 input int    InpTradeDeviationPoints = 30;      // Max price deviation used by CTrade
 
-//--- Global Variables
 CTrade         trade;
 CPositionInfo  m_position;
 double         UpperLevel   = 0;
@@ -133,9 +131,9 @@ int            DashboardMaxSameSide = -1;
 int            DashboardMinSameSideDistance = -1;
 int            DashboardMaxTurns = 0;
 int            DashboardMaxSpread = 0;
-datetime       LastStatusWrite = 0;
-datetime       LastControlRead = 0;
-datetime       LastDashboardDraw = 0;
+ulong          LastStatusWriteMs = 0;
+ulong          LastControlReadMs = 0;
+ulong          LastDashboardDrawMs = 0;
 datetime       LastTradeTime = 0;
 datetime       LastRecoveryBlockLog = 0;
 string         LastEventSource = "init";
@@ -162,7 +160,7 @@ double         ModelScale[MODEL_FEATURE_COUNT];
 double         ModelWeights[MODEL_FEATURE_COUNT];
 double         LastModelScore = 0.0;
 string         ModelReason = "No model loaded yet.";
-datetime       LastModelRead = 0;
+ulong          LastModelReadMs = 0;
 datetime       LastModelBlockLog = 0;
 int            AtrHandle = INVALID_HANDLE;
 int            AtrEntryHandle = INVALID_HANDLE;
@@ -188,9 +186,15 @@ double         LastClosedProfit = 0.0;
 datetime       ScalpWindowStart = 0;
 int            ScalpClosedTrades = 0;
 string         LastScalpRiskReason = "Ready.";
-bool           CycleLogged = false;            // cycle row already written for the current cycle
-bool           CycleFeaturesCaptured = false;  // StartCycle() ran, so CycleFeatures[] is real data
-double         CycleLastProfit = 0.0;          // last basket profit seen while positions were open
+datetime       LastOrderFailureTime = 0;
+datetime       LastCloseFailureTime = 0;
+datetime       LastTrailFailureTime = 0;
+datetime       LastFailureLogTime = 0;
+string         LastFailureLogMessage = "";
+string         PendingExitReason = "";
+bool           CycleLogged = false;
+bool           CycleFeaturesCaptured = false;
+double         CycleLastProfit = 0.0;
 
 int OnInit() {
    TesterMode = ((bool)MQLInfoInteger(MQL_TESTER) ||
@@ -241,8 +245,6 @@ void OnDeinit(const int reason)
    Comment("");
 }
 
-//--- Gold-only guard. The fragments in InpGoldSymbols cover broker
-//--- variants such as XAUUSD, XAUUSD.m, GOLD and GOLDmicro.
 bool SymbolIsAllowed()
 {
    if(!InpRestrictToGold)
@@ -271,8 +273,6 @@ bool SymbolIsAllowed()
    return false;
 }
 
-//--- Cent accounts report profit in cents, so USD targets need scaling
-//--- before they are compared against basket profit.
 void ResolveAccountMoneyScale()
 {
    string currency = AccountInfoString(ACCOUNT_CURRENCY);
@@ -303,8 +303,6 @@ double ScaledMoney(double usdAmount)
    return(usdAmount * AccountMoneyScale);
 }
 
-//--- Inverse of ScaledMoney(). The control file holds USD, so anything the EA
-//--- writes back into it must be converted back from account currency.
 double UnscaleMoney(double accountAmount)
 {
    if(AccountMoneyScale <= 0.0)
@@ -313,8 +311,6 @@ double UnscaleMoney(double accountAmount)
    return(accountAmount / AccountMoneyScale);
 }
 
-//--- Money and points are not interchangeable across symbols and lot
-//--- sizes, so convert explicitly before comparing a USD target to spread.
 double PointValuePerLot()
 {
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
@@ -341,8 +337,6 @@ double PointsToMoney(double points, double volume)
    return points * PointValuePerLot() * volume;
 }
 
-//--- Spread is paid on every entry. A target smaller than the spread can
-//--- never win often enough, so raise it until it clears the cost.
 double EffectiveQuickTargetUSD()
 {
    double target = ActiveQuickTargetUSD();
@@ -363,8 +357,6 @@ double EffectiveQuickTargetUSD()
    return target;
 }
 
-//--- Keep the downside proportional to the upside. Without this a 0.15
-//--- target sat behind a 2.00 loss cap, which needs a 93% win rate.
 double EffectiveMaxFloatingLossUSD()
 {
    double cap = ActiveMaxFloatingLossUSD();
@@ -384,8 +376,6 @@ double EffectiveMaxFloatingLossUSD()
    return cap;
 }
 
-//--- The distance the basket actually travels before it closes. The quick
-//--- target usually fires long before the broker take profit does.
 int EffectiveTargetPoints()
 {
    int points = ResolveTakeProfitPoints();
@@ -402,8 +392,6 @@ int EffectiveTargetPoints()
    return points;
 }
 
-//--- ATR sized stops keep gold usable across 2 digit and 3 digit brokers
-//--- instead of hard coding a point count that only fits one of them.
 int AtrDerivedPoints(double factor, int fallbackPoints)
 {
    if(!InpUseAtrStops || factor <= 0.0)
@@ -540,18 +528,16 @@ void RunEngine(string eventSource)
    ReadDashboardControl(false);
    ReadAiModel(false);
 
-   // 1. DASHBOARD
    DrawDashboard(spread);
 
    if(!TradingAllowed())
    {
       SetStatus("Trading blocked by terminal, EA settings, account, or symbol mode.");
       DrawDashboard(spread);
-      WriteDashboardStatus(spread, false, 0.0, true);
+      WriteDashboardStatus(spread, HasManagedPosition(), CurrentManagedProfit());
       return;
    }
 
-   // 2. CHECK POSITIONS & PROFIT
    bool hasPosition = false;
    int positionCount = 0;
    double totalProfit = 0;
@@ -575,10 +561,6 @@ void RunEngine(string eventSource)
    );
    SyncCycleFromPositions(hasPosition, positionCount, firstType, firstTime, firstOpenPrice, bid, ask, spread);
 
-   // A basket can disappear without the EA closing it (broker TP/SL, trailing
-   // stop, manual close). Log that cycle once and clear the stale state, so the
-   // trainer also sees broker-side exits instead of only EA-forced ones.
-   // The short grace period covers a position list that lags a fresh entry.
    if(!hasPosition && CycleId != "" &&
       (CycleStartTime == 0 || TimeCurrent() - CycleStartTime >= 2))
    {
@@ -603,19 +585,11 @@ void RunEngine(string eventSource)
    {
       if(hasPosition)
       {
-         SetStatus("Dashboard close-all command received.");
-         FinishCycle("dashboard_close_all", spread, totalProfit);
-         CloseAll();
-
-         if(HasManagedPosition())
+         if(!ExitBasket("dashboard_close_all", spread, totalProfit))
          {
-            // Leave the command pending so the next tick retries the close.
-            SetStatus("Close-all incomplete. Some positions are still open, retrying.");
-            WriteDashboardStatus(spread, true, CurrentManagedProfit(), true);
+            WriteDashboardStatus(spread, true, CurrentManagedProfit());
             return;
          }
-
-         ResetEA();
       }
       else
       {
@@ -627,7 +601,16 @@ void RunEngine(string eventSource)
       return;
    }
 
-   // 3. EMERGENCY EXIT (Profit Target OR Time-Out)
+   if(hasPosition && PendingExitReason != "")
+   {
+      if(ExitBasket(PendingExitReason, spread, totalProfit))
+         WriteDashboardStatus(spread, false, 0.0, true);
+      else
+         WriteDashboardStatus(spread, true, CurrentManagedProfit());
+
+      return;
+   }
+
    if(hasPosition) {
       bool timeOut = (TimeCurrent() - CycleStartTime >= InpMaxCycleTime);
       bool hitQuickTarget = (InpAggressiveMode &&
@@ -639,9 +622,6 @@ void RunEngine(string eventSource)
       bool hitProfitLock = ProfitLockTriggered(totalProfit);
 
       if(hitNormalTarget || hitQuickTarget || hitProfitLock || hitLossCap || timeOut) {
-         if(timeOut) Print("SHIELD: Cycle timed out. Closing to prevent 24hr trap.");
-         if(hitLossCap) Print("SHIELD: Max floating loss hit. Closing basket.");
-
          string exitReason = "target";
          if(hitQuickTarget)
             exitReason = "quick_target";
@@ -652,25 +632,17 @@ void RunEngine(string eventSource)
          if(timeOut)
             exitReason = "timeout";
 
-         FinishCycle(exitReason, spread, totalProfit);
-         CloseAll();
+         if(ExitBasket(exitReason, spread, totalProfit))
+            WriteDashboardStatus(spread, false, 0.0, true);
+         else
+            WriteDashboardStatus(spread, true, CurrentManagedProfit());
 
-         if(HasManagedPosition())
-         {
-            SetStatus("Exit triggered (" + exitReason + ") but some positions are still open, retrying.");
-            WriteDashboardStatus(spread, true, CurrentManagedProfit(), true);
-            return;
-         }
-
-         ResetEA();
-         WriteDashboardStatus(spread, false, 0.0, true);
          return;
       }
 
       ManageOpenPositions(bid, ask);
    }
 
-   // 4. INITIAL ENTRY (With Spread Filter)
    if(!hasPosition)
    {
       if(!DashboardEnabled)
@@ -686,7 +658,7 @@ void RunEngine(string eventSource)
          SetStatus("Waiting: spread is above the max allowed.");
          DrawDashboard(spread);
          WriteDashboardStatus(spread, hasPosition, totalProfit);
-         return; // DON'T start a new cycle during high spread!
+         return;
       }
 
       if(!ScalpSpreadAllowsEntry(spread))
@@ -756,18 +728,17 @@ void RunEngine(string eventSource)
          }
          else
          {
-            LogTradeFailure(entryType == POSITION_TYPE_SELL ? "Initial SELL" : "Initial BUY");
+            NoteOrderFailure(entryType == POSITION_TYPE_SELL ? "Initial SELL" : "Initial BUY");
          }
       }
       else
       {
-         LogTradeFailure(entryType == POSITION_TYPE_SELL ? "Initial SELL" : "Initial BUY");
+         NoteOrderFailure(entryType == POSITION_TYPE_SELL ? "Initial SELL" : "Initial BUY");
       }
       WriteDashboardStatus(spread, HasManagedPosition(), CurrentManagedProfit(), true);
       return;
    }
 
-   // 5. RECOVERY LOGIC
    if(!DashboardEnabled)
    {
       SetStatus("Paused with open positions. Profit and timeout exits are still monitored.");
@@ -808,10 +779,10 @@ void RunEngine(string eventSource)
             }
             else
             {
-               LogTradeFailure("Recovery SELL");
+               NoteOrderFailure("Recovery SELL");
             }
          }
-      
+
          if(ask >= UpperLevel && lastType == POSITION_TYPE_SELL)
          {
             if(!RecoveryExposureAllows(POSITION_TYPE_BUY, ask, spread, totalProfit))
@@ -834,7 +805,7 @@ void RunEngine(string eventSource)
             }
             else
             {
-               LogTradeFailure("Recovery BUY");
+               NoteOrderFailure("Recovery BUY");
             }
          }
       }
@@ -859,6 +830,28 @@ void CloseAll() {
    }
 }
 
+bool ExitBasket(string exitReason, int spread, double totalProfit)
+{
+   if(LastCloseFailureTime != 0 && TimeCurrent() - LastCloseFailureTime < CLOSE_RETRY_SECONDS)
+      return false;
+
+   SetStatus("Closing basket: " + exitReason + ".");
+   FinishCycle(exitReason, spread, totalProfit);
+   CloseAll();
+
+   if(HasManagedPosition())
+   {
+      LastCloseFailureTime = TimeCurrent();
+      PendingExitReason = exitReason;
+      SetStatus("Close incomplete (" + exitReason + "). Positions are still open, retrying.");
+      return false;
+   }
+
+   LastCloseFailureTime = 0;
+   ResetEA();
+   return true;
+}
+
 bool ProfitLockTriggered(double totalProfit)
 {
    if(!InpUseProfitLock)
@@ -875,9 +868,6 @@ bool ProfitLockTriggered(double totalProfit)
    if(totalProfit > CyclePeakProfit - giveBack)
       return false;
 
-   Print("SHIELD: Profit lock hit. Peak ", DoubleToString(CyclePeakProfit, 2),
-         " now ", DoubleToString(totalProfit, 2));
-
    return true;
 }
 
@@ -887,6 +877,9 @@ void ManageOpenPositions(double bid, double ask)
       return;
 
    if(InpBreakEvenPoints <= 0 && InpTrailingStartPoints <= 0)
+      return;
+
+   if(LastTrailFailureTime != 0 && TimeCurrent() - LastTrailFailureTime < TRAIL_RETRY_SECONDS)
       return;
 
    double minDistance = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
@@ -925,7 +918,10 @@ void ManageOpenPositions(double bid, double ask)
          if(newStop > currentStop + tolerance && (bid - newStop) > minDistance)
          {
             if(!trade.PositionModify(ticket, newStop, takeProfit) || !TradeSucceeded())
+            {
                LogTradeFailure("Trailing stop BUY");
+               LastTrailFailureTime = TimeCurrent();
+            }
          }
       }
       else if(positionType == POSITION_TYPE_SELL)
@@ -951,7 +947,10 @@ void ManageOpenPositions(double bid, double ask)
          if(newStop < effectiveStop - tolerance && (newStop - ask) > minDistance)
          {
             if(!trade.PositionModify(ticket, newStop, takeProfit) || !TradeSucceeded())
+            {
                LogTradeFailure("Trailing stop SELL");
+               LastTrailFailureTime = TimeCurrent();
+            }
          }
       }
    }
@@ -980,6 +979,7 @@ void ResetEA() {
    CycleLogged = false;
    CycleFeaturesCaptured = false;
    CycleLastProfit = 0.0;
+   PendingExitReason = "";
 
    for(int i = 0; i < MODEL_FEATURE_COUNT; i++)
       CycleFeatures[i] = 0.0;
@@ -1128,6 +1128,18 @@ void BuildOrderStops(ENUM_POSITION_TYPE entryType, double entryPrice, double &st
 
    int takeProfitPoints = ResolveTakeProfitPoints();
    int stopLossPoints = ResolveStopLossPoints();
+
+   int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   if(stopsLevel > 0)
+   {
+      int spreadPoints = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+
+      if(takeProfitPoints > 0 && takeProfitPoints < stopsLevel + 1)
+         takeProfitPoints = stopsLevel + 1;
+
+      if(stopLossPoints > 0 && stopLossPoints < stopsLevel + spreadPoints + 1)
+         stopLossPoints = stopsLevel + spreadPoints + 1;
+   }
 
    if(entryType == POSITION_TYPE_SELL)
    {
@@ -1283,7 +1295,7 @@ int FastEntryTrendSignal(int spread)
                            LastEntryTrendMaDeltaPoints < 0.0 &&
                            latestClose < fastMa &&
                            (fallingCloses || enoughBearishBars) &&
-                           LastEntryTrendRsi >= 22.0;
+                           LastEntryTrendRsi >= 12.0;
 
    bool buyPullback = LastEntryTrendMaDeltaPoints >= minMovePoints &&
                       LastEntryTrendMovePoints <= -(minMovePoints * 0.35) &&
@@ -1311,7 +1323,7 @@ int FastEntryTrendSignal(int spread)
                     LastEntryTrendBodyPoints <= -minBodyPoints &&
                     latestClose < fastMa &&
                     enoughBearishBars &&
-                    LastEntryTrendRsi >= 22.0;
+                    LastEntryTrendRsi >= 10.0;
 
    LastEntryTrendReason = "move=" + DoubleToString(LastEntryTrendMovePoints, 1) +
                           " body=" + DoubleToString(LastEntryTrendBodyPoints, 1) +
@@ -1372,8 +1384,6 @@ int FastEntryTrendSignal(int spread)
    return 0;
 }
 
-//--- Last-chance direction call so the EA keeps taking small pushes
-//--- instead of standing flat whenever the strict patterns disagree.
 int UltraOpenSignal(double latestClose, double fastMa)
 {
    if(!InpUltraOpenMode)
@@ -1392,7 +1402,6 @@ int UltraOpenSignal(double latestClose, double fastMa)
 
    if(buyPush && sellPush)
    {
-      // Both sides showed something, so let the candle body break the tie.
       buyPush = (LastEntryTrendBodyPoints > 0.0);
       sellPush = (LastEntryTrendBodyPoints < 0.0);
 
@@ -1535,8 +1544,6 @@ bool ScalpSpreadAllowsEntry(int spread)
    if(!InpFastScalpMode)
       return true;
 
-   // Compare spread against the distance the trade really travels before
-   // it closes, not the broker take profit that almost never fires.
    int targetPoints = EffectiveTargetPoints();
    if(targetPoints <= 0)
       return true;
@@ -1564,6 +1571,9 @@ bool ScalpSpreadAllowsEntry(int spread)
 
 bool CanTradeNow()
 {
+   if(LastOrderFailureTime != 0 && TimeCurrent() - LastOrderFailureTime < ORDER_FAILURE_BACKOFF_SECONDS)
+      return false;
+
    int waitSeconds = InpMinSecondsBetweenTrades;
    if(waitSeconds < 0)
       waitSeconds = 0;
@@ -1723,10 +1733,10 @@ void ReadAiModel(bool forceRead)
       return;
    }
 
-   if(!forceRead && LastModelRead != 0 && TimeCurrent() - LastModelRead < 5)
+   if(!forceRead && !ElapsedMs(LastModelReadMs, 5000))
       return;
 
-   LastModelRead = TimeCurrent();
+   LastModelReadMs = NowMs();
 
    int handle = FileOpen(InpModelFile,
                          FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -1790,7 +1800,7 @@ bool ParseDoubleList(string value, double &target[], int expectedCount)
    string parts[];
    int count = StringSplit(value, ',', parts);
 
-   if(count < expectedCount)
+   if(count != expectedCount)
       return false;
 
    for(int i = 0; i < expectedCount; i++)
@@ -1900,8 +1910,6 @@ bool CopyClosedBufferValue(int handle, double &value)
    return true;
 }
 
-//--- Stops must be sized from the timeframe the EA actually trades on.
-//--- PERIOD_CURRENT gave a daily ATR when the EA sat on an H1/D1 chart.
 double EntryTimeframeAtrPoints()
 {
    double atr = 0.0;
@@ -2150,7 +2158,6 @@ void FinishCycle(string exitReason, int spread, double totalProfit)
       return;
    }
 
-   // A close that fails is retried on the next tick; log the cycle only once.
    if(CycleLogged)
       return;
 
@@ -2160,8 +2167,6 @@ void FinishCycle(string exitReason, int spread, double totalProfit)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-   // A cycle adopted after an EA restart has no entry features. Writing it
-   // would feed the trainer a row of zeros, so only the event is logged.
    if(CycleFeaturesCaptured)
       WriteCycleRow(exitReason, durationSeconds, spread, bid, ask, totalProfit);
    else
@@ -2193,7 +2198,7 @@ void AppendEvent(string eventName, int spread, double totalProfit, string detail
              TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS),
              _Symbol,
              eventName,
-             detail,
+             CsvSafe(detail),
              spread,
              DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits),
              DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_ASK), _Digits),
@@ -2285,10 +2290,10 @@ void ReadDashboardControl(bool forceRead)
    if(pollSeconds < 1)
       pollSeconds = 1;
 
-   if(!forceRead && LastControlRead != 0 && TimeCurrent() - LastControlRead < pollSeconds)
+   if(!forceRead && !ElapsedMs(LastControlReadMs, (ulong)pollSeconds * 1000))
       return;
 
-   LastControlRead = TimeCurrent();
+   LastControlReadMs = NowMs();
 
    int handle = FileOpen(InpControlFile,
                          FILE_READ | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -2374,10 +2379,10 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    if(writeSeconds < 1)
       writeSeconds = 1;
 
-   if(!forceWrite && LastStatusWrite != 0 && TimeCurrent() - LastStatusWrite < writeSeconds)
+   if(!forceWrite && !ElapsedMs(LastStatusWriteMs, (ulong)writeSeconds * 1000))
       return;
 
-   LastStatusWrite = TimeCurrent();
+   LastStatusWriteMs = NowMs();
 
    int handle = FileOpen(InpStatusFile,
                          FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
@@ -2486,6 +2491,9 @@ void AcknowledgeCloseAllCommand()
 
 bool IsTrueValue(string value)
 {
+   StringTrimLeft(value);
+   StringTrimRight(value);
+
    return(value == "1" || value == "true" || value == "TRUE" || value == "True");
 }
 
@@ -2509,8 +2517,6 @@ double ActiveMultiplier()
    return(DashboardMultiplier > 0.0 ? DashboardMultiplier : Multiplier);
 }
 
-//--- Money targets are entered in USD and scaled into account currency,
-//--- so 0.25 means a real 0.25 USD on both standard and cent accounts.
 double ActiveTargetUSD()
 {
    return(ScaledMoney(DashboardTargetUSD > 0.0 ? DashboardTargetUSD : TargetUSD));
@@ -2523,7 +2529,6 @@ double ActiveQuickTargetUSD()
 
 double ActiveMaxFloatingLossUSD()
 {
-   // >= 0 so a dashboard value of 0 really does disable the cap.
    return(ScaledMoney(DashboardMaxLossUSD >= 0.0 ? DashboardMaxLossUSD : InpMaxFloatingLossUSD));
 }
 
@@ -2634,8 +2639,40 @@ void LogTradeFailure(string action)
                     trade.ResultRetcodeDescription() +
                     ". LastError: " + IntegerToString(GetLastError());
    SetStatus(message);
-   AppendEvent("TRADE_FAILURE", (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD), CurrentManagedProfit(), message);
+
+   datetime now = TimeCurrent();
+   if(message != LastFailureLogMessage || LastFailureLogTime == 0 || now - LastFailureLogTime >= FAILURE_LOG_SECONDS)
+   {
+      LastFailureLogMessage = message;
+      LastFailureLogTime = now;
+      AppendEvent("TRADE_FAILURE", (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD), CurrentManagedProfit(), message);
+   }
+
    ResetLastError();
+}
+
+void NoteOrderFailure(string action)
+{
+   LogTradeFailure(action);
+   LastOrderFailureTime = TimeCurrent();
+}
+
+ulong NowMs()
+{
+   return GetTickCount64();
+}
+
+bool ElapsedMs(ulong sinceMs, ulong windowMs)
+{
+   return(sinceMs == 0 || NowMs() - sinceMs >= windowMs);
+}
+
+string CsvSafe(string text)
+{
+   StringReplace(text, ",", ";");
+   StringReplace(text, "\r", " ");
+   StringReplace(text, "\n", " ");
+   return text;
 }
 
 void SetStatus(string status)
@@ -2648,10 +2685,10 @@ void SetStatus(string status)
 }
 
 void DrawDashboard(int spread) {
-   if(LastDashboardDraw != 0 && TimeCurrent() - LastDashboardDraw < 1)
+   if(!ElapsedMs(LastDashboardDrawMs, 1000))
       return;
 
-   LastDashboardDraw = TimeCurrent();
+   LastDashboardDrawMs = NowMs();
 
    string status = (spread <= ActiveMaxSpread()) ? "SAFE" : "TOXIC SPREAD";
    string dashboard = DashboardControlActive() ? (DashboardEnabled ? "RUNNING" : "PAUSED") : "LOCAL INPUTS";
@@ -2659,7 +2696,6 @@ void DrawDashboard(int spread) {
    string entryMode = InpUltraOpenMode ? "ULTRA OPEN" : "STRICT";
    string recoveryMode = ActiveAllowRecovery() ? "ON" : "OFF";
 
-   // Built as one string because Comment() accepts at most 64 arguments.
    string text = "--- RECOVERY SHIELD ---\n";
    text += "Version: " + EA_BUILD_VERSION + " | Entry: " + entryMode + "\n";
    text += "Current Spread: " + IntegerToString(spread) + "\n";

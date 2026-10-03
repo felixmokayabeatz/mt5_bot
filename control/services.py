@@ -1,8 +1,8 @@
 import os
+import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-
 
 CONTROL_FILE_NAME = "recovery_shield_control.txt"
 STATUS_FILE_NAME = "recovery_shield_status.txt"
@@ -12,8 +12,10 @@ MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
 APP_VERSION = "v1.0.7"
-EA_BUILD_NUMBER = "12"
+EA_BUILD_NUMBER = "13"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
+STATUS_STALE_SECONDS = 15
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_CONTROL = {
     "enabled": "0",
@@ -73,10 +75,8 @@ CONTROL_PRESETS = {
     },
 }
 
-
 class SettingsError(ValueError):
     pass
-
 
 def env_flag(name, default=False):
     value = os.environ.get(name)
@@ -84,13 +84,11 @@ def env_flag(name, default=False):
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
-
 def debug_log(message):
     if not env_flag("DASHBOARD_DEBUG", False):
         return
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[dashboard {timestamp}] {message}", flush=True)
-
 
 def common_files_dir():
     configured = os.environ.get("MT5_COMMON_FILES_DIR")
@@ -101,32 +99,25 @@ def common_files_dir():
     if appdata:
         return Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
 
-    return Path.cwd() / "mt5_common_files"
-
+    return PROJECT_ROOT / "mt5_common_files"
 
 def control_file_path():
     return common_files_dir() / CONTROL_FILE_NAME
 
-
 def status_file_path():
     return common_files_dir() / STATUS_FILE_NAME
-
 
 def event_log_file_path():
     return common_files_dir() / EVENT_LOG_FILE_NAME
 
-
 def cycle_log_file_path():
     return common_files_dir() / CYCLE_LOG_FILE_NAME
-
 
 def model_file_path():
     return common_files_dir() / MODEL_FILE_NAME
 
-
 def version_file_path():
     return common_files_dir() / VERSION_FILE_NAME
-
 
 def runtime_paths():
     return {
@@ -138,7 +129,6 @@ def runtime_paths():
         "model_file": model_file_path(),
         "version_file": version_file_path(),
     }
-
 
 def read_key_values(path):
     values = {}
@@ -160,7 +150,6 @@ def read_key_values(path):
         values[key.strip().lstrip("\ufeff")] = value.strip()
     return values
 
-
 def safe_write_text(target, text):
     tmp = target.with_suffix(".tmp")
     tmp.write_text(text, encoding="utf-8")
@@ -177,16 +166,13 @@ def safe_write_text(target, text):
             except OSError:
                 pass
 
-
 def read_control():
     values = DEFAULT_CONTROL.copy()
     values.update(read_key_values(control_file_path()))
     return values
 
-
 def read_status():
     return read_key_values(status_file_path())
-
 
 def read_model():
     values = {
@@ -213,7 +199,6 @@ def read_model():
     values.update(read_key_values(model_file_path()))
     return values
 
-
 def read_version():
     values = {
         "app_version": APP_VERSION,
@@ -226,18 +211,35 @@ def read_version():
     values.update(read_key_values(version_file_path()))
     return values
 
+def status_file_age_seconds():
+    try:
+        modified = status_file_path().stat().st_mtime
+    except OSError:
+        return None
 
-def runtime_state(control, status, version):
+    return max(time.time() - modified, 0.0)
+
+def runtime_state(control, status, version, status_age_seconds=None):
     command_enabled = control.get("enabled") == "1"
     compiled_version = version.get("ea_version") or EA_VERSION
     running_version = status.get("ea_version", "").strip()
     status_seen = bool(status)
-    ea_confirmed = command_enabled and running_version == compiled_version
+    status_stale = (
+        status_seen
+        and status_age_seconds is not None
+        and status_age_seconds > STATUS_STALE_SECONDS
+    )
+    ea_confirmed = (
+        command_enabled and running_version == compiled_version and not status_stale
+    )
     version_mismatch = running_version != compiled_version
 
     if not command_enabled:
         badge_label = "Paused"
         badge_state = "paused"
+    elif status_stale:
+        badge_label = "EA Offline"
+        badge_state = "warning"
     elif ea_confirmed:
         badge_label = "EA Confirmed"
         badge_state = "confirmed"
@@ -257,11 +259,14 @@ def runtime_state(control, status, version):
         "running_version": running_version or "unknown / old EA",
         "status_seen": status_seen,
         "ea_confirmed": ea_confirmed,
+        "status_stale": bool(status_stale),
+        "status_age_seconds": (
+            None if status_age_seconds is None else round(status_age_seconds, 1)
+        ),
         "version_mismatch": version_mismatch,
         "badge_label": badge_label,
         "badge_state": badge_state,
     }
-
 
 def csv_data_row_count(path):
     if not path.exists():
@@ -289,7 +294,6 @@ def csv_data_row_count(path):
 
     return count
 
-
 def write_control(values):
     target = control_file_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -310,7 +314,6 @@ def write_control(values):
     )
     return clean
 
-
 def apply_control_preset(values, preset_name):
     if preset_name not in CONTROL_PRESETS:
         raise SettingsError("Unknown control preset.")
@@ -318,7 +321,6 @@ def apply_control_preset(values, preset_name):
     clean = values.copy()
     clean.update(CONTROL_PRESETS[preset_name])
     return clean
-
 
 def file_debug_info(path):
     try:
@@ -334,7 +336,6 @@ def file_debug_info(path):
         "modified": modified,
     }
 
-
 def file_info_bundle(paths):
     return {
         "control_file_info": file_debug_info(paths["control_file"]),
@@ -344,7 +345,6 @@ def file_info_bundle(paths):
         "model_file_info": file_debug_info(paths["model_file"]),
         "version_file_info": file_debug_info(paths["version_file"]),
     }
-
 
 def validate_control(post_data):
     return {
@@ -370,9 +370,7 @@ def validate_control(post_data):
         "max_spread": int_value(post_data, "max_spread", minimum=1, maximum=10000),
     }
 
-
 DECIMAL_MAXIMUM = Decimal("1000000")
-
 
 def decimal_value(post_data, field, minimum, maximum=DECIMAL_MAXIMUM):
     raw = str(post_data.get(field, "")).strip()
@@ -392,7 +390,6 @@ def decimal_value(post_data, field, minimum, maximum=DECIMAL_MAXIMUM):
         raise SettingsError(f"{label} must be at most {maximum}.")
 
     return format(value.normalize(), "f")
-
 
 def int_value(post_data, field, minimum, maximum):
     raw = str(post_data.get(field, "")).strip()

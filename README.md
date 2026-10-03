@@ -180,7 +180,7 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.7` and the current EA build is `v1.0.7_12`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_12.ex5`. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.7` and the current EA build is `v1.0.7_13`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_13.ex5`. The repository does not ship a compiled `volatilty.ex5`; run `start.bat build` or `build_ea.ps1` to produce one that matches the source. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 
@@ -221,6 +221,30 @@ For a quick private run:
 Use a process manager on the server so both MT5 and the dashboard restart after reboots.
 
 ## Changelog
+
+### v1.0.7_13
+
+EA (`volatilty.mq5`, rebuild and reattach it; the dashboard shows a version mismatch until you do):
+
+- A close that fails is retried every 2 seconds until every position is gone, even if the exit condition that triggered it no longer holds. Before, it was retried on every 100 ms tick, and a basket could be left half closed once profit moved away from the target.
+- A rejected entry or recovery order backs off for 5 seconds. Before, a refused order (market closed, invalid stops) was resent on every timer tick and logged each time.
+- Identical `TRADE_FAILURE` events and failed trailing-stop updates are throttled instead of being written on every tick.
+- Take profit and stop loss are widened to the broker's minimum stop distance (stops level plus spread for the stop loss), so small ATR-derived stops are no longer rejected with `Invalid stops`.
+- Dashboard control reads, status writes, model reads and the on-chart panel are throttled with a real-time clock. They used server time, which stops when the market is closed, so Pause and Close All were never read over the weekend and the status file stopped updating.
+- The "trading blocked" branch no longer rewrites the status file on every tick and now reports the real position state.
+- The sell-side RSI exhaustion limits mirror the buy side (`12` and `10` instead of `22` for continuation and scalp sells).
+- A model file whose vectors do not hold exactly the expected number of values is rejected instead of partly loaded.
+- Event messages are made CSV safe, and control values tolerate stray whitespace.
+
+Dashboard and tooling:
+
+- Pause and Close All are always sent. A typo in an unrelated settings field used to block them; now the command goes out and the invalid settings are simply not saved.
+- The badge shows `EA Offline` when the status file is older than 15 seconds, instead of staying on `EA Confirmed` after MT5 closes.
+- `Allow recovery` is a dropdown instead of a free text box, and the Quick presets say they also send the start command.
+- The page and `dashboard.js` no longer invent values (`0.50`, `0.05`, `300`, a hard-coded `v1.0.7_11`) when the EA has not reported them; they show `-`. The poller skips a poll while the previous one is still running.
+- Default shared folder and the trainer path are resolved from the project folder, not from the directory the server was started in. The trainer is started with a relative path from the project root.
+- The trainer ignores rows whose features are all zero (cycles adopted after a restart in older logs).
+- All comments and docstrings were removed from the source. The only `//` text left in `volatilty.mq5` is on `input` lines, because MetaTrader shows it as the label of each setting.
 
 ### v1.0.7_12
 

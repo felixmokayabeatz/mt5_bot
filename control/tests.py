@@ -4,6 +4,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from unittest import mock
+
 from django.conf import settings
 from django.contrib.staticfiles import finders
 from django.test import SimpleTestCase, TestCase
@@ -19,8 +21,8 @@ from .services import (
     validate_control,
     write_control,
 )
+from . import views
 from .views import training_failure_reason
-
 
 VALID_FORM = {
     "initial_lot": "0.02",
@@ -39,9 +41,7 @@ VALID_FORM = {
     "max_spread": "350",
 }
 
-
 class CommonFilesDirMixin:
-    """Point the app at a throw-away shared folder for the duration of a test."""
 
     def use_temp_common_dir(self):
         temp = tempfile.TemporaryDirectory()
@@ -57,7 +57,6 @@ class CommonFilesDirMixin:
 
         self.addCleanup(restore)
         return Path(temp.name)
-
 
 class ServiceTests(SimpleTestCase):
     def test_validate_control_accepts_valid_values(self):
@@ -106,7 +105,7 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(read_version()["app_version"], "v1.0.7")
-            self.assertEqual(read_version()["ea_version"], "v1.0.7_12")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_13")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -144,7 +143,6 @@ class ServiceTests(SimpleTestCase):
         self.assertEqual(control["stop_loss_points"], "250")
         self.assertEqual(control["max_spread"], "400")
 
-
 class ValidationHardeningTests(SimpleTestCase):
     def assert_rejected(self, field, value):
         form = dict(VALID_FORM)
@@ -173,7 +171,6 @@ class ValidationHardeningTests(SimpleTestCase):
         form = dict(VALID_FORM)
         form["max_loss_usd"] = "100"
         self.assertEqual(validate_control(form)["max_loss_usd"], "100")
-
 
 class ControlFileTests(CommonFilesDirMixin, SimpleTestCase):
     def test_write_control_drops_stale_ea_acknowledgement(self):
@@ -207,7 +204,6 @@ class ControlFileTests(CommonFilesDirMixin, SimpleTestCase):
 
         log.write_text("a,b\n1,2\n3,4\n5,6\n", encoding="utf-8")
         self.assertEqual(csv_data_row_count(log), 3)
-
 
 class TrainerTests(CommonFilesDirMixin, SimpleTestCase):
     @staticmethod
@@ -256,7 +252,6 @@ class TrainerTests(CommonFilesDirMixin, SimpleTestCase):
             else:
                 os.environ["MODEL_THRESHOLD"] = previous
 
-
 class DashboardViewTests(CommonFilesDirMixin, TestCase):
     def test_nan_in_form_shows_an_error_instead_of_a_server_error(self):
         directory = self.use_temp_common_dir()
@@ -283,14 +278,14 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
 
         response = self.client.get("/")
 
-        self.assertContains(response, "v1.0.7_12")
+        self.assertContains(response, "v1.0.7_13")
 
     def test_status_api_reports_the_compiled_version(self):
         self.use_temp_common_dir()
 
         payload = self.client.get("/api/status/").json()
 
-        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_12")
+        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_13")
         self.assertEqual(payload["runtime_state"]["badge_state"], "paused")
 
     def test_training_failure_message_uses_last_trainer_line(self):
@@ -313,3 +308,140 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
         self.assertNotIn("await fetch(", html)
         self.assertNotIn("function refreshStatus", html)
         self.assertIsNotNone(finders.find("control/dashboard.js"))
+
+
+class StaleStatusTests(SimpleTestCase):
+    def state(self, enabled, age):
+        return runtime_state(
+            {"enabled": enabled},
+            {"ea_version": "v1.0.7_13"},
+            {"ea_version": "v1.0.7_13"},
+            status_age_seconds=age,
+        )
+
+    def test_old_status_file_is_reported_offline(self):
+        state = self.state("1", 120)
+        self.assertEqual(state["badge_label"], "EA Offline")
+        self.assertEqual(state["badge_state"], "warning")
+        self.assertFalse(state["ea_confirmed"])
+        self.assertTrue(state["status_stale"])
+
+    def test_fresh_status_file_is_confirmed(self):
+        state = self.state("1", 2)
+        self.assertEqual(state["badge_state"], "confirmed")
+        self.assertFalse(state["status_stale"])
+
+    def test_paused_is_not_overridden_by_stale_status(self):
+        self.assertEqual(self.state("0", 999)["badge_state"], "paused")
+
+    def test_missing_age_never_marks_stale(self):
+        self.assertFalse(self.state("1", None)["status_stale"])
+
+
+class EmergencyCommandTests(CommonFilesDirMixin, TestCase):
+    def saved(self, directory):
+        path = directory / "recovery_shield_control.txt"
+        if not path.exists():
+            return None
+        return dict(
+            line.split("=", 1)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+
+    def test_close_all_is_sent_even_when_a_field_is_invalid(self):
+        directory = self.use_temp_common_dir()
+        form = dict(VALID_FORM, action="close_all", initial_lot="oops")
+
+        self.client.post("/", form)
+
+        saved = self.saved(directory)
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["close_all"], "1")
+        self.assertEqual(saved["enabled"], "0")
+        self.assertEqual(saved["initial_lot"], "0.01")
+
+    def test_pause_is_sent_even_when_a_field_is_invalid(self):
+        directory = self.use_temp_common_dir()
+        write_control(dict(read_control(), enabled="1"))
+
+        self.client.post("/", dict(VALID_FORM, action="pause", zone_height="x"))
+
+        self.assertEqual(self.saved(directory)["enabled"], "0")
+
+    def test_start_is_rejected_when_a_field_is_invalid(self):
+        directory = self.use_temp_common_dir()
+
+        self.client.post("/", dict(VALID_FORM, action="start", initial_lot="NaN"))
+
+        self.assertIsNone(self.saved(directory))
+
+    def test_training_timeout_becomes_a_page_message(self):
+        self.use_temp_common_dir()
+        timeout = subprocess.TimeoutExpired(cmd="x", timeout=1)
+
+        with mock.patch.object(views.subprocess, "run", side_effect=timeout):
+            response = self.client.post("/", {"action": "train_model"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "trainer timed out")
+
+    def test_trainer_runs_from_a_project_relative_path(self):
+        self.use_temp_common_dir()
+        done = subprocess.CompletedProcess(["x"], 0, stdout="", stderr="")
+
+        with mock.patch.object(views.subprocess, "run", return_value=done) as run:
+            self.client.post("/", {"action": "train_model"})
+
+        command = run.call_args.args[0]
+        self.assertFalse(os.path.isabs(command[1]))
+        self.assertEqual(run.call_args.kwargs["cwd"], str(settings.BASE_DIR))
+
+    def test_status_api_reports_staleness_fields(self):
+        self.use_temp_common_dir()
+
+        runtime = self.client.get("/api/status/").json()["runtime_state"]
+
+        self.assertIn("status_stale", runtime)
+        self.assertIn("status_age_seconds", runtime)
+
+    def test_recovery_setting_is_a_dropdown(self):
+        self.use_temp_common_dir()
+
+        response = self.client.get("/")
+
+        self.assertContains(response, '<select name="allow_recovery">')
+
+
+class ProjectRelativePathTests(SimpleTestCase):
+    def test_default_common_dir_does_not_depend_on_working_directory(self):
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"MT5_COMMON_FILES_DIR", "APPDATA"}
+        }
+        previous = os.getcwd()
+        with mock.patch.dict(os.environ, environment, clear=True):
+            try:
+                os.chdir(tempfile.gettempdir())
+                resolved = common_files_dir()
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual(resolved, Path(settings.BASE_DIR) / "mt5_common_files")
+
+
+class TrainerRowFilterTests(CommonFilesDirMixin, SimpleTestCase):
+    def test_rows_with_no_captured_features_are_skipped(self):
+        trainer = TrainerTests.load_trainer()
+        directory = self.use_temp_common_dir()
+        header = ",".join(trainer.FEATURES + ["exit_profit"])
+        real = ",".join(["1"] * len(trainer.FEATURES)) + ",0.50"
+        empty = ",".join(["0"] * len(trainer.FEATURES)) + ",-0.50"
+        log = directory / "cycles.csv"
+        log.write_text("\n".join([header, real, empty]) + "\n", encoding="utf-8")
+
+        rows = trainer.load_rows(log)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["label"], 1)

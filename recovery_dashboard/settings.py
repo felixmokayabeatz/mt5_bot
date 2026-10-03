@@ -3,9 +3,7 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
-
 
 def env_bool(name, default):
     value = os.environ.get(name)
@@ -13,13 +11,11 @@ def env_bool(name, default):
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
-
 def env_list(name, default):
     value = os.environ.get(name)
     if not value:
         return default
     return [item.strip() for item in value.split(",") if item.strip()]
-
 
 DEBUG = env_bool("DJANGO_DEBUG", True)
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")

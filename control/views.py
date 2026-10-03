@@ -22,12 +22,14 @@ from .services import (
     read_version,
     runtime_paths,
     runtime_state,
+    status_file_age_seconds,
     validate_control,
     write_control,
 )
 
 TRAINING_TIMEOUT_SECONDS = 300
-
+EMERGENCY_ACTIONS = {"pause", "close_all"}
+TRAINER_SCRIPT = os.path.join("scripts", "train_model.py")
 
 def dashboard(request):
     control = read_control()
@@ -48,17 +50,22 @@ def dashboard(request):
             control = apply_control_preset(control, action)
             write_control(control)
             if action == "quick_now":
-                messages.warning(request, "Quick Now preset applied.")
+                messages.warning(request, "Quick Now preset applied. EA start command sent.")
             else:
-                messages.success(request, "Safe Quick preset applied.")
+                messages.success(request, "Safe Quick preset applied. EA start command sent.")
             return redirect("dashboard")
 
         try:
             control.update(validate_control(request.POST))
         except SettingsError as exc:
             debug_log(f"validation failed: {exc}")
-            messages.error(request, str(exc))
-            return redirect("dashboard")
+            if action not in EMERGENCY_ACTIONS:
+                messages.error(request, str(exc))
+                return redirect("dashboard")
+
+            messages.warning(
+                request, f"{exc} Settings were not saved, but the command was sent."
+            )
 
         if action == "start":
             control["enabled"] = "1"
@@ -88,14 +95,15 @@ def dashboard(request):
         "status": status,
         "model": read_model(),
         "version": version,
-        "runtime_state": runtime_state(control, status, version),
+        "runtime_state": runtime_state(
+            control, status, version, status_file_age_seconds()
+        ),
         **paths,
         **file_info,
         "event_rows": csv_data_row_count(event_log_file_path()),
         "cycle_rows": csv_data_row_count(cycle_log_file_path()),
     }
     return render(request, "control/dashboard.html", context)
-
 
 def status_api(request):
     control = read_control()
@@ -114,7 +122,9 @@ def status_api(request):
             "status": status,
             "model": read_model(),
             "version": version,
-            "runtime_state": runtime_state(control, status, version),
+            "runtime_state": runtime_state(
+                control, status, version, status_file_age_seconds()
+            ),
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "paths": {key: str(value) for key, value in paths.items()},
             "files": {
@@ -132,25 +142,21 @@ def status_api(request):
         }
     )
 
-
 def training_failure_reason(result):
-    """Last useful line of trainer output, so the dashboard can show why it failed."""
     for stream in (result.stderr, result.stdout):
         lines = [line.strip() for line in (stream or "").splitlines() if line.strip()]
         if lines:
             return lines[-1][:300]
     return "no output from the trainer."
 
-
 def run_model_training():
     root = str(settings.BASE_DIR)
-    script = os.path.join(root, "scripts", "train_model.py")
 
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = root if not existing_pythonpath else root + os.pathsep + existing_pythonpath
 
-    command = [sys.executable, script]
+    command = [sys.executable, TRAINER_SCRIPT]
     debug_log("training command: " + " ".join(command))
 
     try:

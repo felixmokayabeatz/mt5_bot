@@ -82,7 +82,10 @@
           </label>
           <label>
             <span>Allow recovery</span>
-            <input name="allow_recovery" inputmode="numeric" value="{{ control.allow_recovery }}">
+            <select name="allow_recovery">
+              <option value="0"{% if control.allow_recovery != "1" %} selected{% endif %}>Off</option>
+              <option value="1"{% if control.allow_recovery == "1" %} selected{% endif %}>On</option>
+            </select>
           </label>
           <label>
             <span>Take profit points</span>
@@ -190,7 +193,7 @@
           </div>
           <div>
             <dt>Entry mode</dt>
-            <dd id="ultra-open">{% if status.ultra_open_mode == "1" %}Ultra open{% else %}Strict{% endif %}</dd>
+            <dd id="ultra-open">{% if status.ultra_open_mode == "1" %}Ultra open{% elif status.ultra_open_mode %}Strict{% else %}-{% endif %}</dd>
           </div>
           <div>
             <dt>Quick target</dt>
@@ -202,7 +205,7 @@
           </div>
           <div>
             <dt>Recovery</dt>
-            <dd id="allow-recovery">{% if status.allow_recovery == "1" %}On{% else %}Off{% endif %}</dd>
+            <dd id="allow-recovery">{% if status.allow_recovery == "1" %}On{% elif status.allow_recovery %}Off{% else %}-{% endif %}</dd>
           </div>
           <div>
             <dt>TP / SL points</dt>

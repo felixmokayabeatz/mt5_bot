@@ -4,7 +4,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 FEATURES = [
     "spread",
     "hour",
@@ -27,7 +26,6 @@ LEARNING_RATE = 0.05
 L2 = 0.001
 DEFAULT_THRESHOLD = 0.55
 
-
 def env_float(name, default=None):
     raw = os.environ.get(name)
     if raw is None:
@@ -40,13 +38,10 @@ def env_float(name, default=None):
         return default
     return value
 
-
 THRESHOLD_OVERRIDE = env_float("MODEL_THRESHOLD")
-
 
 def clamp_threshold(value):
     return min(max(value, 0.01), 0.99)
-
 
 def common_files_dir():
     configured = os.environ.get("MT5_COMMON_FILES_DIR")
@@ -57,19 +52,15 @@ def common_files_dir():
     if appdata:
         return Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files"
 
-    return Path.cwd() / "mt5_common_files"
-
+    return Path(__file__).resolve().parent.parent / "mt5_common_files"
 
 def cycle_log_path():
     return common_files_dir() / "recovery_shield_cycles.csv"
 
-
 def model_path():
     return common_files_dir() / "recovery_shield_model.txt"
 
-
 def parse_optional_float(row, key):
-    """Return a finite float, or None when the cell is missing, blank, nan or inf."""
     try:
         value = float(str(row.get(key, "")).strip())
     except (TypeError, ValueError):
@@ -78,11 +69,9 @@ def parse_optional_float(row, key):
         return None
     return value
 
-
 def parse_float(row, key, default=0.0):
     value = parse_optional_float(row, key)
     return default if value is None else value
-
 
 def load_rows(path):
     if not path.exists():
@@ -95,12 +84,14 @@ def load_rows(path):
             if not row:
                 continue
 
-            # A row without a readable result must not be counted as a win.
             profit = parse_optional_float(row, "exit_profit")
             if profit is None:
                 continue
 
             features = [parse_float(row, name) for name in FEATURES]
+            if not any(features):
+                continue
+
             rows.append(
                 {
                     "features": features,
@@ -111,13 +102,11 @@ def load_rows(path):
 
     return rows
 
-
 def active_threshold():
     if THRESHOLD_OVERRIDE is not None:
         return clamp_threshold(THRESHOLD_OVERRIDE)
 
     return DEFAULT_THRESHOLD
-
 
 def safe_write_text(target, text):
     tmp = target.with_suffix(".tmp")
@@ -126,8 +115,13 @@ def safe_write_text(target, text):
     try:
         os.replace(tmp, target)
     except OSError:
-        target.write_text(text, encoding="utf-8")
-
+        try:
+            target.write_text(text, encoding="utf-8")
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 def write_model(
     enabled,
@@ -172,7 +166,6 @@ def write_model(
     safe_write_text(target, "\n".join(f"{key}={value}" for key, value in lines.items()) + "\n")
     return target
 
-
 def normalize(rows):
     columns = list(zip(*(row["features"] for row in rows)))
     mean = [sum(column) / len(column) for column in columns]
@@ -194,14 +187,12 @@ def normalize(rows):
 
     return normalized, mean, scale
 
-
 def sigmoid(value):
     if value > 30.0:
         return 1.0
     if value < -30.0:
         return 0.0
     return 1.0 / (1.0 + math.exp(-value))
-
 
 def median(values):
     ordered = sorted(values)
@@ -213,7 +204,6 @@ def median(values):
         return ordered[midpoint]
 
     return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
-
 
 def build_sample_weights(rows):
     wins = max(sum(1 for row in rows if row["label"] == 1), 1)
@@ -229,7 +219,6 @@ def build_sample_weights(rows):
         weights.append(class_weight * profit_weight)
 
     return weights
-
 
 def train(rows):
     x_values, mean, scale = normalize(rows)
@@ -259,7 +248,6 @@ def train(rows):
 
     return weights, bias, mean, scale
 
-
 def score_features(features, weights, bias, mean, scale):
     z_value = bias
 
@@ -268,7 +256,6 @@ def score_features(features, weights, bias, mean, scale):
         z_value += weights[index] * ((value - mean[index]) / feature_scale)
 
     return sigmoid(z_value)
-
 
 def evaluate_rows(rows, weights, bias, mean, scale, threshold):
     if not rows:
@@ -317,12 +304,10 @@ def evaluate_rows(rows, weights, bias, mean, scale, threshold):
         "selected_losses": selected_losses,
     }
 
-
 def can_train(rows):
     wins = sum(1 for row in rows if row["label"] == 1)
     losses = len(rows) - wins
     return len(rows) >= MIN_ROWS and wins >= MIN_CLASS_ROWS and losses >= MIN_CLASS_ROWS
-
 
 def validation_split(rows):
     if len(rows) < MIN_ROWS + VALIDATION_MIN_ROWS:
@@ -336,7 +321,6 @@ def validation_split(rows):
         return None, None
 
     return training_rows, validation_rows
-
 
 def choose_threshold(rows):
     if THRESHOLD_OVERRIDE is not None:
@@ -400,7 +384,6 @@ def choose_threshold(rows):
         "validation_avg_profit": f"{best_stats['avg_profit']:.2f}",
         "validation_total_profit": f"{best_stats['total_profit']:.2f}",
     }
-
 
 def main():
     path = cycle_log_path()
@@ -470,7 +453,6 @@ def main():
         )
     print(f"[trainer] model enabled and written: {target}", flush=True)
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
