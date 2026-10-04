@@ -45,6 +45,17 @@ VALID_FORM = {
     "max_spread": "350",
 }
 
+class CrossFieldValidationTests(SimpleTestCase):
+
+    def test_max_lot_below_initial_lot_is_rejected(self):
+        form = dict(VALID_FORM, initial_lot="0.10", max_lot="0.05")
+        with self.assertRaises(SettingsError):
+            validate_control(form)
+
+    def test_max_lot_equal_to_initial_lot_is_accepted(self):
+        form = dict(VALID_FORM, initial_lot="0.05", max_lot="0.05")
+        self.assertEqual(validate_control(form)["max_lot"], "0.05")
+
 class CommonFilesDirMixin:
 
     def use_temp_common_dir(self):
@@ -109,7 +120,7 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(read_version()["app_version"], "v1.0.7")
-            self.assertEqual(read_version()["ea_version"], "v1.0.7_15")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_16")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -295,14 +306,14 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
 
         response = self.client.get("/")
 
-        self.assertContains(response, "v1.0.7_15")
+        self.assertContains(response, "v1.0.7_16")
 
     def test_status_api_reports_the_compiled_version(self):
         self.use_temp_common_dir()
 
         payload = self.client.get("/api/status/").json()
 
-        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_15")
+        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_16")
         self.assertEqual(payload["runtime_state"]["badge_state"], "paused")
 
     def test_training_failure_message_uses_last_trainer_line(self):
@@ -331,8 +342,8 @@ class StaleStatusTests(SimpleTestCase):
     def state(self, enabled, age):
         return runtime_state(
             {"enabled": enabled},
-            {"ea_version": "v1.0.7_15"},
-            {"ea_version": "v1.0.7_15"},
+            {"ea_version": "v1.0.7_16"},
+            {"ea_version": "v1.0.7_16"},
             status_age_seconds=age,
         )
 

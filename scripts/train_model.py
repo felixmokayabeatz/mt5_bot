@@ -233,17 +233,23 @@ def train(rows):
     bias = 0.0
     total_weight = sum(sample_weights) or 1.0
 
+    samples = list(zip(x_values, y_values, sample_weights))
+    feature_range = range(len(FEATURES))
+
     for _ in range(TRAINING_STEPS):
-        grad_weights = [0.0 for _ in FEATURES]
+        grad_weights = [0.0] * len(FEATURES)
         grad_bias = 0.0
 
-        for features, label, sample_weight in zip(x_values, y_values, sample_weights):
-            prediction = sigmoid(sum(w * x for w, x in zip(weights, features)) + bias)
-            error = (prediction - label) * sample_weight
+        for features, label, sample_weight in samples:
+            z_value = bias
+            for index in feature_range:
+                z_value += weights[index] * features[index]
+
+            error = (sigmoid(z_value) - label) * sample_weight
             grad_bias += error
 
-            for index, value in enumerate(features):
-                grad_weights[index] += error * value
+            for index in feature_range:
+                grad_weights[index] += error * features[index]
 
         bias -= LEARNING_RATE * grad_bias / total_weight
 

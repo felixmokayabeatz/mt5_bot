@@ -12,7 +12,7 @@ MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
 APP_VERSION = "v1.0.7"
-EA_BUILD_NUMBER = "15"
+EA_BUILD_NUMBER = "16"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 STATUS_STALE_SECONDS = 15
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -347,7 +347,7 @@ def file_info_bundle(paths):
     }
 
 def validate_control(post_data):
-    return {
+    cleaned = {
         "initial_lot": decimal_value(
             post_data, "initial_lot", minimum=Decimal("0.01"), maximum=Decimal("1000")
         ),
@@ -369,6 +369,11 @@ def validate_control(post_data):
         "max_turns": int_value(post_data, "max_turns", minimum=1, maximum=20),
         "max_spread": int_value(post_data, "max_spread", minimum=1, maximum=10000),
     }
+
+    if Decimal(cleaned["max_lot"]) < Decimal(cleaned["initial_lot"]):
+        raise SettingsError("max lot must be at least the initial lot.")
+
+    return cleaned
 
 DECIMAL_MAXIMUM = Decimal("1000000")
 

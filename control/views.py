@@ -27,7 +27,7 @@ from .services import (
     write_control,
 )
 
-TRAINING_TIMEOUT_SECONDS = 300
+TRAINING_TIMEOUT_SECONDS = 900
 EMERGENCY_ACTIONS = {"pause", "close_all"}
 TRAINER_SCRIPT = os.path.join("scripts", "train_model.py")
 

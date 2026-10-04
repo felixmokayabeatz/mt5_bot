@@ -3,8 +3,8 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 15
-#define EA_BUILD_VERSION "v1.0.7_15"
+#define EA_BUILD_NUMBER 16
+#define EA_BUILD_VERSION "v1.0.7_16"
 #define MODEL_FEATURE_COUNT 10
 #define ORDER_FAILURE_BACKOFF_SECONDS 5
 #define CLOSE_RETRY_SECONDS 2
@@ -622,15 +622,15 @@ void RunEngine(string eventSource)
       bool hitProfitLock = ProfitLockTriggered(totalProfit);
 
       if(hitNormalTarget || hitQuickTarget || hitProfitLock || hitLossCap || timeOut) {
-         string exitReason = "target";
+         string exitReason = "timeout";
+         if(hitNormalTarget)
+            exitReason = "target";
          if(hitQuickTarget)
             exitReason = "quick_target";
          if(hitProfitLock)
             exitReason = "profit_lock";
          if(hitLossCap)
             exitReason = "max_loss";
-         if(timeOut)
-            exitReason = "timeout";
 
          if(ExitBasket(exitReason, spread, totalProfit))
             WriteDashboardStatus(spread, false, 0.0, true);
@@ -1759,7 +1759,9 @@ void ReadAiModel(bool forceRead)
 
    if(handle == INVALID_HANDLE)
    {
-      InitializeModelDefaults();
+      if(!(ModelFileFound && FileIsExist(InpModelFile, FILE_COMMON)))
+         InitializeModelDefaults();
+
       return;
    }
 
@@ -2024,26 +2026,7 @@ double CalculateMaDeltaPoints(int fastPeriod, int slowPeriod)
 
 double SimpleMa(int period)
 {
-   if(period <= 0)
-      return 0.0;
-
-   double total = 0.0;
-   int counted = 0;
-
-   for(int shift = 1; shift <= period; shift++)
-   {
-      double closePrice = iClose(_Symbol, PERIOD_CURRENT, shift);
-      if(closePrice <= 0.0)
-         continue;
-
-      total += closePrice;
-      counted++;
-   }
-
-   if(counted == 0)
-      return 0.0;
-
-   return total / counted;
+   return SimpleMaOnTimeframe(PERIOD_CURRENT, period);
 }
 
 double SimpleMaOnTimeframe(ENUM_TIMEFRAMES timeframe, int period)
@@ -2111,41 +2094,7 @@ double CalculateRsiOnTimeframe(ENUM_TIMEFRAMES timeframe, int period)
 
 double CalculateRsi(int period)
 {
-   if(period <= 0)
-      return 50.0;
-
-   double gains = 0.0;
-   double losses = 0.0;
-   int counted = 0;
-
-   for(int shift = 1; shift <= period; shift++)
-   {
-      double closeNow = iClose(_Symbol, PERIOD_CURRENT, shift);
-      double closePrevious = iClose(_Symbol, PERIOD_CURRENT, shift + 1);
-
-      if(closeNow <= 0.0 || closePrevious <= 0.0)
-         continue;
-
-      double change = closeNow - closePrevious;
-      if(change >= 0.0)
-         gains += change;
-      else
-         losses += MathAbs(change);
-
-      counted++;
-   }
-
-   if(counted == 0)
-      return 50.0;
-
-   double averageGain = gains / counted;
-   double averageLoss = losses / counted;
-
-   if(averageLoss <= 0.0)
-      return 100.0;
-
-   double rs = averageGain / averageLoss;
-   return 100.0 - (100.0 / (1.0 + rs));
+   return CalculateRsiOnTimeframe(PERIOD_CURRENT, period);
 }
 
 void StartCycle(double bid, double ask, int spread, double modelScore)
