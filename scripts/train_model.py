@@ -18,6 +18,7 @@ FEATURES = [
 ]
 
 MIN_ROWS = 30
+MAX_TRAINING_ROWS = 5000
 MIN_CLASS_ROWS = 5
 VALIDATION_MIN_ROWS = 10
 VALIDATION_FRACTION = 0.25
@@ -101,6 +102,9 @@ def load_rows(path):
             )
 
     return rows
+
+def limit_rows(rows):
+    return rows[-MAX_TRAINING_ROWS:]
 
 def active_threshold():
     if THRESHOLD_OVERRIDE is not None:
@@ -388,7 +392,7 @@ def choose_threshold(rows):
 
 def main():
     path = cycle_log_path()
-    rows = load_rows(path)
+    rows = limit_rows(load_rows(path))
     wins = sum(1 for row in rows if row["label"] == 1)
     losses = len(rows) - wins
 

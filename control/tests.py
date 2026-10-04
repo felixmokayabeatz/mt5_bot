@@ -109,7 +109,7 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(read_version()["app_version"], "v1.0.7")
-            self.assertEqual(read_version()["ea_version"], "v1.0.7_14")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_15")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -166,6 +166,9 @@ class ValidationHardeningTests(SimpleTestCase):
         self.assert_rejected("target_usd", "1e999999")
         self.assert_rejected("initial_lot", "5000")
         self.assert_rejected("multiplier", "101")
+
+    def test_zero_max_lot_is_rejected(self):
+        self.assert_rejected("max_lot", "0")
 
     def test_non_numbers_are_rejected(self):
         self.assert_rejected("initial_lot", "")
@@ -256,6 +259,16 @@ class TrainerTests(CommonFilesDirMixin, SimpleTestCase):
             else:
                 os.environ["MODEL_THRESHOLD"] = previous
 
+    def test_training_rows_are_capped_to_the_most_recent(self):
+        trainer = self.load_trainer()
+        rows = list(range(trainer.MAX_TRAINING_ROWS + 250))
+
+        limited = trainer.limit_rows(rows)
+
+        self.assertEqual(len(limited), trainer.MAX_TRAINING_ROWS)
+        self.assertEqual(limited[-1], rows[-1])
+        self.assertEqual(limited[0], rows[250])
+
 class DashboardViewTests(CommonFilesDirMixin, TestCase):
     def test_nan_in_form_shows_an_error_instead_of_a_server_error(self):
         directory = self.use_temp_common_dir()
@@ -282,14 +295,14 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
 
         response = self.client.get("/")
 
-        self.assertContains(response, "v1.0.7_14")
+        self.assertContains(response, "v1.0.7_15")
 
     def test_status_api_reports_the_compiled_version(self):
         self.use_temp_common_dir()
 
         payload = self.client.get("/api/status/").json()
 
-        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_14")
+        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_15")
         self.assertEqual(payload["runtime_state"]["badge_state"], "paused")
 
     def test_training_failure_message_uses_last_trainer_line(self):
@@ -318,8 +331,8 @@ class StaleStatusTests(SimpleTestCase):
     def state(self, enabled, age):
         return runtime_state(
             {"enabled": enabled},
-            {"ea_version": "v1.0.7_14"},
-            {"ea_version": "v1.0.7_14"},
+            {"ea_version": "v1.0.7_15"},
+            {"ea_version": "v1.0.7_15"},
             status_age_seconds=age,
         )
 

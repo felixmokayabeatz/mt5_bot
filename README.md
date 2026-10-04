@@ -180,13 +180,13 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.7` and the current EA build is `v1.0.7_14`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_14.ex5`. The repository does not ship a compiled `volatilty.ex5`; run `start.bat build` or `build_ea.ps1` to produce one that matches the source. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.7` and the current EA build is `v1.0.7_15`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_15.ex5`. The repository does not ship a compiled `volatilty.ex5`; run `start.bat build` or `build_ea.ps1` to produce one that matches the source. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 
 ## AI training
 
-Every finished basket is written to `recovery_shield_cycles.csv`, whether the EA closed it (`quick_target`, `profit_lock`, `max_loss`, `timeout`, `dashboard_close_all`) or it disappeared on its own through a broker TP/SL, a trailing stop, or a manual close (`external_close`, profit taken from the last basket value the EA saw). Rows without a readable `exit_profit` are skipped by the trainer, never counted as wins.
+Every finished basket is written to `recovery_shield_cycles.csv`, whether the EA closed it (`quick_target`, `profit_lock`, `max_loss`, `timeout`, `dashboard_close_all`) or it disappeared on its own through a broker TP/SL, a trailing stop, or a manual close (`external_close`, profit taken from the last basket value the EA saw). Rows without a readable `exit_profit` are skipped by the trainer, never counted as wins. Only the most recent 5000 rows are used, so training stays well inside the dashboard's 300 second limit however long the log grows.
 
 The trainer writes `recovery_shield_model.txt` atomically so the EA does not read a partial model. When enough rows exist, it trains a profit-weighted logistic filter and, if there is enough history for validation, chooses the decision threshold from recent closed cycles. Set `MODEL_THRESHOLD` to force your own threshold instead.
 
@@ -221,6 +221,22 @@ For a quick private run:
 Use a process manager on the server so both MT5 and the dashboard restart after reboots.
 
 ## Changelog
+
+### v1.0.7_15
+
+EA (`volatilty.mq5`, rebuild and reattach it; the dashboard shows a version mismatch until you do):
+
+- With `Allow recovery` off, the status now reads `Recovery disabled` while a trade is open. Before, a `Max turns` of `1` logged a `MAX_TURNS_REACHED` event and a "Max turns reached" status on every single cycle even though recovery was never going to run.
+- A basket that is closed by the broker within about two seconds of opening no longer loses its cycle row. The EA now finishes and logs that cycle before it starts the next entry, instead of overwriting its state.
+
+Dashboard and tooling:
+
+- `Max lot` must be at least `0.01`. Before, `0` was accepted and silently removed the recovery lot cap.
+- The `TP / SL points` tile shows the same value on first load and after each poll (EA resolved value, then the EA reported input, then `-`). Before, the page showed the control file values and the poller replaced them with `-`.
+- The `App` version in the page header no longer switches to the running EA's version after the first poll; it keeps showing the compiled app version.
+- The trainer uses only the most recent 5000 closed cycles. Training time grows with every row, and a long-running scalper could push the Train Model button past its 300 second timeout.
+- `.gitignore` now really ignores `staticfiles/` and `*.ex5`, as the `v1.0.7_14` notes already claimed, and the stray `volatilty.ex5` is no longer in the repository.
+- New tests cover the `Max lot` minimum and the trainer row cap.
 
 ### v1.0.7_14
 

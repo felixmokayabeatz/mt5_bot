@@ -217,7 +217,7 @@
           </div>
           <div>
             <dt>TP / SL points</dt>
-            <dd id="tp-sl-points">{{ status.resolved_take_profit_points|default:control.take_profit_points }} / {{ status.resolved_stop_loss_points|default:control.stop_loss_points }}</dd>
+            <dd id="tp-sl-points">{% firstof status.resolved_take_profit_points status.take_profit_points "-" %} / {% firstof status.resolved_stop_loss_points status.stop_loss_points "-" %}</dd>
           </div>
           <div>
             <dt>Account</dt>

@@ -3,8 +3,8 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 14
-#define EA_BUILD_VERSION "v1.0.7_14"
+#define EA_BUILD_NUMBER 15
+#define EA_BUILD_VERSION "v1.0.7_15"
 #define MODEL_FEATURE_COUNT 10
 #define ORDER_FAILURE_BACKOFF_SECONDS 5
 #define CLOSE_RETRY_SECONDS 2
@@ -706,6 +706,14 @@ void RunEngine(string eventSource)
          return;
       }
 
+      if(CycleId != "")
+      {
+         if(!CycleLogged)
+            FinishCycle("external_close", spread, CycleLastProfit);
+
+         ResetEA();
+      }
+
       double entryLot = NormalizeVolume(ActiveInitialLot());
       double stopLoss = 0.0;
       double takeProfit = 0.0;
@@ -754,15 +762,15 @@ void RunEngine(string eventSource)
       return;
    }
 
+   if(!ActiveAllowRecovery())
+   {
+      SetStatus("Recovery disabled. Waiting for TP, SL, quick target, or loss cap.");
+      WriteDashboardStatus(spread, hasPosition, totalProfit);
+      return;
+   }
+
    if(CurrentTurns < ActiveMaxTurns())
    {
-      if(!ActiveAllowRecovery())
-      {
-         SetStatus("Recovery disabled. Waiting for TP, SL, quick target, or loss cap.");
-         WriteDashboardStatus(spread, hasPosition, totalProfit);
-         return;
-      }
-
       if(EntriesAllowed() && CanTradeNow())
       {
          if(bid <= LowerLevel && lastType == POSITION_TYPE_BUY)

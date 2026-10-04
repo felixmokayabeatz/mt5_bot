@@ -12,7 +12,7 @@ MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
 APP_VERSION = "v1.0.7"
-EA_BUILD_NUMBER = "14"
+EA_BUILD_NUMBER = "15"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 STATUS_STALE_SECONDS = 15
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -361,7 +361,7 @@ def validate_control(post_data):
         "allow_recovery": int_value(post_data, "allow_recovery", minimum=0, maximum=1),
         "take_profit_points": int_value(post_data, "take_profit_points", minimum=0, maximum=100000),
         "stop_loss_points": int_value(post_data, "stop_loss_points", minimum=0, maximum=100000),
-        "max_lot": decimal_value(post_data, "max_lot", minimum=Decimal("0"), maximum=Decimal("1000")),
+        "max_lot": decimal_value(post_data, "max_lot", minimum=Decimal("0.01"), maximum=Decimal("1000")),
         "max_same_side": int_value(post_data, "max_same_side", minimum=0, maximum=20),
         "min_same_side_distance": int_value(
             post_data, "min_same_side_distance", minimum=0, maximum=100000

@@ -68,7 +68,7 @@
       }
 
       setText("ea-message", status.ea_message || "No EA status yet");
-      setText("app-version", status.app_version || version.app_version || config.defaultAppVersion);
+      setText("app-version", version.app_version || config.defaultAppVersion);
       setText("ea-version", status.ea_version || "Waiting for EA");
       setText("compiled-header-version", compiledVersion);
       setText("live-ea-version", status.ea_version || "Waiting for EA");
