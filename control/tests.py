@@ -126,7 +126,7 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(read_version()["app_version"], "v1.0.7")
-            self.assertEqual(read_version()["ea_version"], "v1.0.7_17")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_18")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -312,14 +312,14 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
 
         response = self.client.get("/")
 
-        self.assertContains(response, "v1.0.7_17")
+        self.assertContains(response, "v1.0.7_18")
 
     def test_status_api_reports_the_compiled_version(self):
         self.use_temp_common_dir()
 
         payload = self.client.get("/api/status/").json()
 
-        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_17")
+        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_18")
         self.assertEqual(payload["runtime_state"]["badge_state"], "paused")
 
     def test_training_failure_message_uses_last_trainer_line(self):
@@ -329,6 +329,16 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
         self.assertEqual(training_failure_reason(result), "ValueError: boom")
         empty = subprocess.CompletedProcess(["x"], 1, stdout="", stderr="")
         self.assertEqual(training_failure_reason(empty), "no output from the trainer.")
+
+    def test_validation_baseline_is_its_own_metric_block(self):
+        self.use_temp_common_dir()
+
+        html = self.client.get("/").content.decode("utf-8")
+
+        self.assertRegex(
+            html,
+            r'id="validation-profit">[^<]*</dd>\s*</div>\s*<div>\s*<dt>Validation baseline avg</dt>',
+        )
 
     def test_dashboard_loads_polling_from_a_static_file(self):
         self.use_temp_common_dir()
@@ -576,6 +586,26 @@ class SourceHygieneTests(SimpleTestCase):
         self.assertEqual(build, EA_BUILD_NUMBER)
         self.assertEqual(app, APP_VERSION)
         self.assertEqual(full, EA_VERSION)
+
+    def test_ea_validates_inputs_that_would_break_trading(self):
+        source = self.ea_source()
+        start = source.index("string InputValidationProblem()")
+        body = source[start : source.index("double RealizedProfitSince", start)]
+
+        for name in ("TargetUSD", "MaxTurns", "InpMaxSpread"):
+            self.assertIn(name, body)
+
+    def test_cycle_profit_ignores_deals_from_the_previous_cycle(self):
+        source = self.ea_source()
+
+        self.assertIn("RealizedProfitSince(fromTime, LastCycleExitMsc,", source)
+        self.assertIn("DEAL_TIME_MSC", source)
+
+    def test_gitignore_covers_generated_files(self):
+        ignored = (Path(settings.BASE_DIR) / ".gitignore").read_text(encoding="utf-8").split()
+
+        for entry in (".django_secret_key", "staticfiles/", "*.ex5", "db.sqlite3", ".tmp/"):
+            self.assertIn(entry, ignored)
 
 
 class LoginProtectionTests(CommonFilesDirMixin, TestCase):

@@ -3,8 +3,8 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 17
-#define EA_BUILD_VERSION "v1.0.7_17"
+#define EA_BUILD_NUMBER 18
+#define EA_BUILD_VERSION "v1.0.7_18"
 #define MODEL_FEATURE_COUNT 10
 #define MODEL_ATR_PERIOD 14
 #define MODEL_FAST_MA_PERIOD 10
@@ -218,6 +218,7 @@ string         PendingExitReason = "";
 bool           CycleLogged = false;
 bool           CycleFeaturesCaptured = false;
 double         CycleLastProfit = 0.0;
+ulong          LastCycleExitMsc = 0;
 
 int OnInit() {
    TesterMode = ((bool)MQLInfoInteger(MQL_TESTER) ||
@@ -300,6 +301,15 @@ string InputValidationProblem()
    if(Multiplier < 1.0)
       return "Multiplier must be at least 1.0.";
 
+   if(TargetUSD <= 0.0)
+      return "TargetUSD must be above zero.";
+
+   if(MaxTurns < 1)
+      return "MaxTurns must be at least 1.";
+
+   if(InpMaxSpread <= 0)
+      return "InpMaxSpread must be above zero.";
+
    if(InpEntryFastMaPeriod < 1 || InpEntrySlowMaPeriod <= InpEntryFastMaPeriod)
       return "InpEntrySlowMaPeriod must be larger than InpEntryFastMaPeriod.";
 
@@ -324,9 +334,10 @@ string InputValidationProblem()
    return "";
 }
 
-double RealizedProfitSince(datetime fromTime, bool &foundExit)
+double RealizedProfitSince(datetime fromTime, ulong afterMsc, bool &foundExit, ulong &lastExitMsc)
 {
    foundExit = false;
+   lastExitMsc = 0;
 
    if(fromTime <= 0)
       return 0.0;
@@ -353,9 +364,17 @@ double RealizedProfitSince(datetime fromTime, bool &foundExit)
       if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL)
          continue;
 
+      ulong dealMsc = (ulong)HistoryDealGetInteger(ticket, DEAL_TIME_MSC);
+      if(afterMsc > 0 && dealMsc <= afterMsc)
+         continue;
+
       long dealEntry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
       if(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_OUT_BY || dealEntry == DEAL_ENTRY_INOUT)
+      {
          foundExit = true;
+         if(dealMsc > lastExitMsc)
+            lastExitMsc = dealMsc;
+      }
 
       total += HistoryDealGetDouble(ticket, DEAL_PROFIT) +
                HistoryDealGetDouble(ticket, DEAL_COMMISSION) +
@@ -372,11 +391,16 @@ double ResolveCycleProfit(double floatingProfit, bool &isRealized)
 
    datetime fromTime = (CycleStartedAt > 0) ? CycleStartedAt : CycleStartTime;
    bool foundExit = false;
-   double realized = RealizedProfitSince(fromTime, foundExit);
+   ulong lastExitMsc = 0;
+   double realized = RealizedProfitSince(fromTime, LastCycleExitMsc, foundExit, lastExitMsc);
 
    if(foundExit && !HasManagedPosition())
    {
       isRealized = true;
+
+      if(lastExitMsc > LastCycleExitMsc)
+         LastCycleExitMsc = lastExitMsc;
+
       return realized;
    }
 
@@ -400,7 +424,8 @@ bool DailyLossLimitReached()
       parts.sec = 0;
 
       bool foundExit = false;
-      CachedDailyRealizedProfit = RealizedProfitSince(StructToTime(parts), foundExit);
+      ulong lastExitMsc = 0;
+      CachedDailyRealizedProfit = RealizedProfitSince(StructToTime(parts), 0, foundExit, lastExitMsc);
    }
 
    return CachedDailyRealizedProfit <= -limit;
@@ -496,14 +521,6 @@ void ResolveAccountMoneyScale()
 double ScaledMoney(double usdAmount)
 {
    return(usdAmount * AccountMoneyScale);
-}
-
-double UnscaleMoney(double accountAmount)
-{
-   if(AccountMoneyScale <= 0.0)
-      return(accountAmount);
-
-   return(accountAmount / AccountMoneyScale);
 }
 
 double PointValuePerLot()
@@ -708,7 +725,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT) +
                    HistoryDealGetDouble(dealTicket, DEAL_COMMISSION) +
-                   HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+                   HistoryDealGetDouble(dealTicket, DEAL_SWAP) +
+                   HistoryDealGetDouble(dealTicket, DEAL_FEE);
 
    NoteClosedScalp(profit, closedSide);
 }

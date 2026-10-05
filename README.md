@@ -60,7 +60,7 @@ behaviour without changing anything else.
 
 Three independent exits now take money off the table:
 
-- `InpQuickBasketProfitUSD` (`0.25`) closes the basket the moment net profit reaches it.
+- `InpQuickBasketProfitUSD` (`0.75`) closes the basket the moment net profit reaches it.
 - `InpUseProfitLock` arms once basket profit passes `InpProfitLockTriggerUSD` (`0.15`) and
   closes if profit falls `InpProfitLockGiveBackUSD` (`0.08`) back from its peak. The cycle
   logs this as exit reason `profit_lock`, and the dashboard shows the running peak.
@@ -182,13 +182,13 @@ You can also set `MT5_DATA_DIR` to the terminal data folder and the script will 
 
 Use `.\build_ea.ps1 -NoCompile` if you only want to sync the source and compile from MetaEditor yourself.
 
-The current app version is `v1.0.7` and the current EA build is `v1.0.7_15`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_15.ex5`. The repository does not ship a compiled `volatilty.ex5`; run `start.bat build` or `build_ea.ps1` to produce one that matches the source. The dashboard shows both the compiled build version and the version reported by the running EA.
+The current app version is `v1.0.7` and the current EA build is `v1.0.7_18`. The live MT5 file stays named `volatilty.ex5`, and each successful compile also archives a versioned copy such as `builds\volatilty_v1.0.7_18.ex5`. The repository does not ship a compiled `volatilty.ex5`; run `start.bat build` or `build_ea.ps1` to produce one that matches the source. The dashboard shows both the compiled build version and the version reported by the running EA.
 
 To create the next build later, bump `EA_BUILD_NUMBER` near the top of `volatilty.mq5`, then run `.\build_ea.ps1` again.
 
 ## AI training
 
-Every finished basket is written to `recovery_shield_cycles.csv`, whether the EA closed it (`quick_target`, `profit_lock`, `max_loss`, `timeout`, `dashboard_close_all`) or it disappeared on its own through a broker TP/SL, a trailing stop, or a manual close (`external_close`, profit taken from the last basket value the EA saw). Rows without a readable `exit_profit` are skipped by the trainer, never counted as wins. Only the most recent 5000 rows are used, so training stays well inside the dashboard's 300 second limit however long the log grows.
+Every finished basket is written to `recovery_shield_cycles.csv`, whether the EA closed it (`quick_target`, `profit_lock`, `max_loss`, `timeout`, `dashboard_close_all`) or it disappeared on its own through a broker TP/SL, a trailing stop, or a manual close (`external_close`, profit taken from the last basket value the EA saw). Rows without a readable `exit_profit` are skipped by the trainer, never counted as wins. Only the most recent 5000 rows are used, so training stays well inside the dashboard's 900 second limit however long the log grows.
 
 The trainer writes `recovery_shield_model.txt` atomically so the EA does not read a partial model. When enough rows exist, it trains a profit-weighted logistic filter and, if there is enough history for validation, chooses the decision threshold from recent closed cycles. Set `MODEL_THRESHOLD` to force your own threshold instead.
 
@@ -225,6 +225,24 @@ For a quick private run:
 Use a process manager on the server so both MT5 and the dashboard restart after reboots.
 
 ## Changelog
+
+### v1.0.7_18
+
+EA (`volatilty.mq5`, rebuild and reattach it; the dashboard shows a version mismatch until you do):
+
+- A cycle's realized profit no longer includes the previous cycle's exit deal. When a new entry opened in the same server second as the last exit, the old deal fell inside the new cycle's history window and corrupted its training row. Deals are now filtered by millisecond time against the last finished cycle.
+- The loss-streak counter now includes the deal fee, the same as the cycle profit.
+- Inputs are validated on start: `TargetUSD` must be above zero (zero closed every basket the moment it was not losing), `MaxTurns` at least `1`, and `InpMaxSpread` above zero (zero blocked every entry).
+- An unused helper function was removed.
+
+Dashboard and tooling:
+
+- `.gitignore` now really ignores `.django_secret_key`, `staticfiles/` and `*.ex5`, as the earlier notes claimed. The stray `volatilty.ex5` is no longer in the project; build one with `start.bat build` or `build_ea.ps1`. If the file is already tracked, run `git rm --cached volatilty.ex5` once.
+- The WhiteNoise warning `No directory at: staticfiles/` no longer prints on every start.
+- `Validation profit` and `Validation baseline avg` are separate tiles. They shared one block before.
+- The top bar keeps the status pill on the same row as the title when `Sign out` is shown.
+- README figures that had drifted from the code were corrected: the quick target default, the trainer time limit and the current build number.
+- New tests cover input validation, the cycle profit filter, the ignore list and the tile layout.
 
 ### v1.0.7_17
 

@@ -113,6 +113,10 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+try:
+    STATIC_ROOT.mkdir(exist_ok=True)
+except OSError:
+    pass
 WHITENOISE_USE_FINDERS = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
