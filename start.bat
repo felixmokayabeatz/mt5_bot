@@ -12,7 +12,7 @@ if "%DASHBOARD_PORT%"=="" set "DASHBOARD_PORT=8000"
 if /i "%MODE%"=="lan" (
   set "DASHBOARD_HOST=0.0.0.0"
   if "%DJANGO_ALLOWED_HOSTS%"=="" set "DJANGO_ALLOWED_HOSTS=*"
-  echo [start] LAN mode: the dashboard has no login. Only use it on a network you trust.
+  echo [start] LAN mode: sign-in is required. Only use it on a network you trust.
 )
 
 set "PYTHONDONTWRITEBYTECODE=1"
@@ -32,7 +32,7 @@ if not exist "!PYTHON_EXE!" (
   set "PYTHON_EXE=python"
   if exist "%PROJECT_ROOT%.packages" set "PYTHONPATH=%PROJECT_ROOT%.packages"
 ) else (
-  "!PYTHON_EXE!" -c "import django" 1>nul 2>nul
+  "!PYTHON_EXE!" -c "import django, whitenoise" 1>nul 2>nul
   if errorlevel 1 (
     echo [start] Installing requirements, this only happens once ...
     "!PYTHON_EXE!" -m pip install --disable-pip-version-check --quiet --upgrade pip
@@ -57,6 +57,13 @@ if /i "%MODE%"=="build" (
 if errorlevel 1 (
   echo [start] Migrations failed. Showing the error:
   "!PYTHON_EXE!" manage.py migrate --noinput
+  pause
+  exit /b 1
+)
+
+"!PYTHON_EXE!" manage.py ensure_dashboard_user
+if errorlevel 1 (
+  echo [start] Could not create a dashboard account.
   pause
   exit /b 1
 )

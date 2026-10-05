@@ -3,9 +3,15 @@
 #include <Trade\PositionInfo.mqh>
 
 #define EA_APP_VERSION "v1.0.7"
-#define EA_BUILD_NUMBER 16
-#define EA_BUILD_VERSION "v1.0.7_16"
+#define EA_BUILD_NUMBER 17
+#define EA_BUILD_VERSION "v1.0.7_17"
 #define MODEL_FEATURE_COUNT 10
+#define MODEL_ATR_PERIOD 14
+#define MODEL_FAST_MA_PERIOD 10
+#define MODEL_SLOW_MA_PERIOD 30
+#define MODEL_RSI_PERIOD 14
+#define HISTORY_PAD_SECONDS 5
+#define DAILY_LOSS_CHECK_SECONDS 5
 #define ORDER_FAILURE_BACKOFF_SECONDS 5
 #define CLOSE_RETRY_SECONDS 2
 #define TRAIL_RETRY_SECONDS 2
@@ -14,7 +20,7 @@
 input group "Recovery Settings"
 input double InitialLot   = 0.01;
 input int    ZoneHeight   = 500;
-input double Multiplier   = 1.2;
+input double Multiplier   = 1.0;
 input double TargetUSD    = 1.0;
 input int    MaxTurns     = 1;
 
@@ -30,8 +36,8 @@ input int    InpMagic        = 999999;
 
 input group "Aggressive Profit Capture"
 input bool   InpAggressiveMode = true;
-input double InpQuickBasketProfitUSD = 0.25;
-input double InpMaxFloatingLossUSD = 3.0;
+input double InpQuickBasketProfitUSD = 0.75;
+input double InpMaxFloatingLossUSD = 1.10;
 input bool   InpUseProfitLock = true;
 input double InpProfitLockTriggerUSD = 0.15;
 input double InpProfitLockGiveBackUSD = 0.08;
@@ -67,24 +73,37 @@ input int    InpEntryFastMaPeriod = 5;
 input int    InpEntrySlowMaPeriod = 13;
 input int    InpEntryRsiPeriod = 7;
 
+input group "Entry RSI Limits"
+input double InpStrictSpreadMoveFactor = 0.20;
+input double InpPullbackMoveFactor = 0.35;
+input double InpContinuationBuyRsiMax = 88.0;
+input double InpContinuationSellRsiMin = 12.0;
+input double InpPullbackBuyRsiMin = 38.0;
+input double InpPullbackBuyRsiMax = 78.0;
+input double InpPullbackSellRsiMin = 22.0;
+input double InpPullbackSellRsiMax = 62.0;
+input double InpScalpBuyRsiMax = 90.0;
+input double InpScalpSellRsiMin = 10.0;
+
 input group "Ultra Open Mode"
 input bool   InpUltraOpenMode = true;
 input int    InpUltraMinMovePoints = 4;
 input int    InpUltraMinBodyPoints = 1;
 input double InpUltraSpreadMoveFactor = 0.05;
-input double InpUltraRsiBuyBlock = 97.0;
-input double InpUltraRsiSellBlock = 3.0;
+input double InpUltraRsiBuyBlock = 85.0;
+input double InpUltraRsiSellBlock = 15.0;
 
 input group "Risk Throttles"
 input bool   InpFastScalpMode = true;
 input double InpScalpMaxSpreadTpRatio = 0.50;
 input int    InpScalpMaxClosedTrades = 200;
 input int    InpScalpWindowSeconds = 900;
+input double InpMaxDailyLossUSD = 5.0;
 input int    InpMaxConsecutiveLosses = 4;
 input int    InpLossPauseSeconds = 20;
 input int    InpLossSideCooldownSeconds = 20;
 input int    InpMinSecondsBetweenTrades = 1;
-input double InpMaxRecoveryLot = 0.05;
+input double InpMaxRecoveryLot = 0.02;
 input int    InpMaxSameSidePositions = 2;
 input int    InpMinSameSideDistancePoints = 150;
 
@@ -131,6 +150,10 @@ int            DashboardMaxSameSide = -1;
 int            DashboardMinSameSideDistance = -1;
 int            DashboardMaxTurns = 0;
 int            DashboardMaxSpread = 0;
+string         DashboardControlStamp = "";
+string         LastCloseAllHandledStamp = "<none>";
+datetime       LastDailyLossCheck = 0;
+double         CachedDailyRealizedProfit = 0.0;
 ulong          LastStatusWriteMs = 0;
 ulong          LastControlReadMs = 0;
 ulong          LastDashboardDrawMs = 0;
@@ -209,15 +232,36 @@ int OnInit() {
       return(INIT_FAILED);
    }
 
+   string inputProblem = InputValidationProblem();
+   if(inputProblem != "")
+   {
+      Print("RECOVERY SHIELD: invalid input - ", inputProblem);
+      Comment("--- RECOVERY SHIELD ---\nINVALID INPUT\n", inputProblem);
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+
    ResolveAccountMoneyScale();
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpTradeDeviationPoints);
    trade.SetAsyncMode(false);
-   AtrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
-   AtrEntryHandle = iATR(_Symbol, InpEntryTrendTimeframe, 14);
-   FastMaHandle = iMA(_Symbol, PERIOD_CURRENT, 10, 0, MODE_SMA, PRICE_CLOSE);
-   SlowMaHandle = iMA(_Symbol, PERIOD_CURRENT, 30, 0, MODE_SMA, PRICE_CLOSE);
-   RsiHandle = iRSI(_Symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
+   AtrHandle = iATR(_Symbol, PERIOD_CURRENT, MODEL_ATR_PERIOD);
+   AtrEntryHandle = iATR(_Symbol, InpEntryTrendTimeframe, MODEL_ATR_PERIOD);
+   FastMaHandle = iMA(_Symbol, PERIOD_CURRENT, MODEL_FAST_MA_PERIOD, 0, MODE_SMA, PRICE_CLOSE);
+   SlowMaHandle = iMA(_Symbol, PERIOD_CURRENT, MODEL_SLOW_MA_PERIOD, 0, MODE_SMA, PRICE_CLOSE);
+   RsiHandle = iRSI(_Symbol, PERIOD_CURRENT, MODEL_RSI_PERIOD, PRICE_CLOSE);
+
+   if(AtrHandle == INVALID_HANDLE || AtrEntryHandle == INVALID_HANDLE ||
+      FastMaHandle == INVALID_HANDLE || SlowMaHandle == INVALID_HANDLE ||
+      RsiHandle == INVALID_HANDLE)
+   {
+      Print("RECOVERY SHIELD: could not create indicator handles. Error ", GetLastError());
+      OnDeinit(REASON_INITFAILED);
+      return(INIT_FAILED);
+   }
+
+   if(!InpUseHardStops && !InpAllowRecovery)
+      Print("RECOVERY SHIELD WARNING: hard stops and recovery are both off. Only the floating loss cap protects the account.");
+
    InitializeModelDefaults();
    ReadDashboardControl(true);
    ReadAiModel(true);
@@ -243,6 +287,157 @@ void OnDeinit(const int reason)
    ReleaseIndicator(SlowMaHandle);
    ReleaseIndicator(RsiHandle);
    Comment("");
+}
+
+string InputValidationProblem()
+{
+   if(InitialLot <= 0.0)
+      return "InitialLot must be above zero.";
+
+   if(ZoneHeight <= 0)
+      return "ZoneHeight must be above zero.";
+
+   if(Multiplier < 1.0)
+      return "Multiplier must be at least 1.0.";
+
+   if(InpEntryFastMaPeriod < 1 || InpEntrySlowMaPeriod <= InpEntryFastMaPeriod)
+      return "InpEntrySlowMaPeriod must be larger than InpEntryFastMaPeriod.";
+
+   if(InpEntryRsiPeriod < 2)
+      return "InpEntryRsiPeriod must be at least 2.";
+
+   if(InpAtrMinStopPoints > 0 && InpAtrMaxStopPoints > 0 && InpAtrMinStopPoints > InpAtrMaxStopPoints)
+      return "InpAtrMinStopPoints must not exceed InpAtrMaxStopPoints.";
+
+   if(InpContinuationSellRsiMin >= InpContinuationBuyRsiMax ||
+      InpPullbackBuyRsiMin >= InpPullbackBuyRsiMax ||
+      InpPullbackSellRsiMin >= InpPullbackSellRsiMax ||
+      InpScalpSellRsiMin >= InpScalpBuyRsiMax)
+      return "Each RSI minimum must be below its maximum.";
+
+   if(InpMaxDailyLossUSD < 0.0)
+      return "InpMaxDailyLossUSD must not be negative.";
+
+   if(InpTradeDeviationPoints < 0)
+      return "InpTradeDeviationPoints must not be negative.";
+
+   return "";
+}
+
+double RealizedProfitSince(datetime fromTime, bool &foundExit)
+{
+   foundExit = false;
+
+   if(fromTime <= 0)
+      return 0.0;
+
+   if(!HistorySelect(fromTime, TimeCurrent() + HISTORY_PAD_SECONDS))
+      return 0.0;
+
+   double total = 0.0;
+   int count = HistoryDealsTotal();
+
+   for(int i = 0; i < count; i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0)
+         continue;
+
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol)
+         continue;
+
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagic)
+         continue;
+
+      long dealType = HistoryDealGetInteger(ticket, DEAL_TYPE);
+      if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL)
+         continue;
+
+      long dealEntry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_OUT_BY || dealEntry == DEAL_ENTRY_INOUT)
+         foundExit = true;
+
+      total += HistoryDealGetDouble(ticket, DEAL_PROFIT) +
+               HistoryDealGetDouble(ticket, DEAL_COMMISSION) +
+               HistoryDealGetDouble(ticket, DEAL_SWAP) +
+               HistoryDealGetDouble(ticket, DEAL_FEE);
+   }
+
+   return total;
+}
+
+double ResolveCycleProfit(double floatingProfit, bool &isRealized)
+{
+   isRealized = false;
+
+   datetime fromTime = (CycleStartedAt > 0) ? CycleStartedAt : CycleStartTime;
+   bool foundExit = false;
+   double realized = RealizedProfitSince(fromTime, foundExit);
+
+   if(foundExit && !HasManagedPosition())
+   {
+      isRealized = true;
+      return realized;
+   }
+
+   return floatingProfit;
+}
+
+bool DailyLossLimitReached()
+{
+   double limit = ScaledMoney(InpMaxDailyLossUSD);
+   if(limit <= 0.0)
+      return false;
+
+   if(LastDailyLossCheck == 0 || TimeCurrent() - LastDailyLossCheck >= DAILY_LOSS_CHECK_SECONDS)
+   {
+      LastDailyLossCheck = TimeCurrent();
+
+      MqlDateTime parts;
+      TimeToStruct(TimeCurrent(), parts);
+      parts.hour = 0;
+      parts.min = 0;
+      parts.sec = 0;
+
+      bool foundExit = false;
+      CachedDailyRealizedProfit = RealizedProfitSince(StructToTime(parts), foundExit);
+   }
+
+   return CachedDailyRealizedProfit <= -limit;
+}
+
+int ScalpSpreadLimit()
+{
+   if(!InpFastScalpMode)
+      return 0;
+
+   int targetPoints = EffectiveTargetPoints();
+   if(targetPoints <= 0)
+      return 0;
+
+   double ratio = InpScalpMaxSpreadTpRatio;
+   if(ratio <= 0.0)
+      return 0;
+
+   if(ratio > 1.0)
+      ratio = 1.0;
+
+   int limit = (int)MathFloor(targetPoints * ratio);
+   if(limit < 1)
+      return 0;
+
+   return limit;
+}
+
+int EffectiveSpreadLimit()
+{
+   int limit = ActiveMaxSpread();
+   int scalpLimit = ScalpSpreadLimit();
+
+   if(scalpLimit > 0 && scalpLimit < limit)
+      limit = scalpLimit;
+
+   return limit;
 }
 
 bool SymbolIsAllowed()
@@ -661,6 +856,14 @@ void RunEngine(string eventSource)
          return;
       }
 
+      if(DailyLossLimitReached())
+      {
+         SetStatus("Daily loss limit reached. New entries are blocked until the next server day.");
+         DrawDashboard(spread);
+         WriteDashboardStatus(spread, hasPosition, totalProfit);
+         return;
+      }
+
       if(spread > ActiveMaxSpread())
       {
          SetStatus("Waiting: spread is above the max allowed.");
@@ -852,7 +1055,6 @@ bool ExitBasket(string exitReason, int spread, double totalProfit)
       return false;
 
    SetStatus("Closing basket: " + exitReason + ".");
-   FinishCycle(exitReason, spread, totalProfit);
    CloseAll();
 
    if(HasManagedPosition())
@@ -863,6 +1065,7 @@ bool ExitBasket(string exitReason, int spread, double totalProfit)
       return false;
    }
 
+   FinishCycle(exitReason, spread, totalProfit);
    LastCloseFailureTime = 0;
    ResetEA();
    return true;
@@ -1284,7 +1487,7 @@ int FastEntryTrendSignal(int spread)
    if(minMovePoints < 1.0)
       minMovePoints = 1.0;
 
-   double spreadMoveFactor = InpUltraOpenMode ? InpUltraSpreadMoveFactor : 0.20;
+   double spreadMoveFactor = InpUltraOpenMode ? InpUltraSpreadMoveFactor : InpStrictSpreadMoveFactor;
    if(spreadMoveFactor < 0.0)
       spreadMoveFactor = 0.0;
 
@@ -1304,42 +1507,44 @@ int FastEntryTrendSignal(int spread)
                           LastEntryTrendMaDeltaPoints > 0.0 &&
                           latestClose > fastMa &&
                           (risingCloses || enoughBullishBars) &&
-                          LastEntryTrendRsi <= 88.0;
+                          LastEntryTrendRsi <= InpContinuationBuyRsiMax;
 
    bool sellContinuation = LastEntryTrendMovePoints <= -minMovePoints &&
                            LastEntryTrendBodyPoints <= -minBodyPoints &&
                            LastEntryTrendMaDeltaPoints < 0.0 &&
                            latestClose < fastMa &&
                            (fallingCloses || enoughBearishBars) &&
-                           LastEntryTrendRsi >= 12.0;
+                           LastEntryTrendRsi >= InpContinuationSellRsiMin;
+
+   double pullbackMove = minMovePoints * MathMax(InpPullbackMoveFactor, 0.0);
 
    bool buyPullback = LastEntryTrendMaDeltaPoints >= minMovePoints &&
-                      LastEntryTrendMovePoints <= -(minMovePoints * 0.35) &&
+                      LastEntryTrendMovePoints <= -pullbackMove &&
                       LastEntryTrendBodyPoints <= -minBodyPoints &&
                       latestClose > slowMa &&
-                      LastEntryTrendRsi >= 38.0 &&
-                      LastEntryTrendRsi <= 78.0;
+                      LastEntryTrendRsi >= InpPullbackBuyRsiMin &&
+                      LastEntryTrendRsi <= InpPullbackBuyRsiMax;
 
    bool sellPullback = LastEntryTrendMaDeltaPoints <= -minMovePoints &&
-                       LastEntryTrendMovePoints >= (minMovePoints * 0.35) &&
+                       LastEntryTrendMovePoints >= pullbackMove &&
                        LastEntryTrendBodyPoints >= minBodyPoints &&
                        latestClose < slowMa &&
-                       LastEntryTrendRsi >= 22.0 &&
-                       LastEntryTrendRsi <= 62.0;
+                       LastEntryTrendRsi >= InpPullbackSellRsiMin &&
+                       LastEntryTrendRsi <= InpPullbackSellRsiMax;
 
    bool scalpBuy = InpFastScalpMode &&
                    LastEntryTrendMovePoints >= minMovePoints &&
                    LastEntryTrendBodyPoints >= minBodyPoints &&
                    latestClose > fastMa &&
                    enoughBullishBars &&
-                   LastEntryTrendRsi <= 90.0;
+                   LastEntryTrendRsi <= InpScalpBuyRsiMax;
 
    bool scalpSell = InpFastScalpMode &&
                     LastEntryTrendMovePoints <= -minMovePoints &&
                     LastEntryTrendBodyPoints <= -minBodyPoints &&
                     latestClose < fastMa &&
                     enoughBearishBars &&
-                    LastEntryTrendRsi >= 10.0;
+                    LastEntryTrendRsi >= InpScalpSellRsiMin;
 
    LastEntryTrendReason = "move=" + DoubleToString(LastEntryTrendMovePoints, 1) +
                           " body=" + DoubleToString(LastEntryTrendBodyPoints, 1) +
@@ -1388,7 +1593,7 @@ int FastEntryTrendSignal(int spread)
       return -1;
    }
 
-   int ultraSignal = UltraOpenSignal(latestClose, fastMa);
+   int ultraSignal = UltraOpenSignal(latestClose, fastMa, spread);
    if(ultraSignal != 0)
    {
       LastEntryTrendSignal = ultraSignal;
@@ -1400,33 +1605,25 @@ int FastEntryTrendSignal(int spread)
    return 0;
 }
 
-int UltraOpenSignal(double latestClose, double fastMa)
+int UltraOpenSignal(double latestClose, double fastMa, int spread)
 {
    if(!InpUltraOpenMode)
       return 0;
 
-   double minMove = (double)InpUltraMinMovePoints;
-   if(minMove < 1.0)
-      minMove = 1.0;
+   double minMove = MathMax(1.0, (double)InpUltraMinMovePoints);
+   double spreadMove = (double)spread * MathMax(InpUltraSpreadMoveFactor, 0.0);
+   if(spreadMove > minMove)
+      minMove = spreadMove;
 
-   double minBody = (double)InpUltraMinBodyPoints;
-   if(minBody < 0.0)
-      minBody = 0.0;
+   double minBody = MathMax(0.0, (double)InpUltraMinBodyPoints);
 
-   bool buyPush = (LastEntryTrendMovePoints >= minMove || LastEntryTrendBodyPoints >= minBody);
-   bool sellPush = (LastEntryTrendMovePoints <= -minMove || LastEntryTrendBodyPoints <= -minBody);
+   bool buyPush = LastEntryTrendMovePoints >= minMove &&
+                  LastEntryTrendBodyPoints >= minBody &&
+                  latestClose > fastMa;
 
-   if(buyPush && sellPush)
-   {
-      buyPush = (LastEntryTrendBodyPoints > 0.0);
-      sellPush = (LastEntryTrendBodyPoints < 0.0);
-
-      if(!buyPush && !sellPush)
-      {
-         buyPush = (latestClose > fastMa);
-         sellPush = (latestClose < fastMa);
-      }
-   }
+   bool sellPush = LastEntryTrendMovePoints <= -minMove &&
+                   LastEntryTrendBodyPoints <= -minBody &&
+                   latestClose < fastMa;
 
    if(buyPush && LastEntryTrendRsi < InpUltraRsiBuyBlock)
       return 1;
@@ -1557,29 +1754,12 @@ bool ScalpRiskAllowsEntry(ENUM_POSITION_TYPE entryType)
 
 bool ScalpSpreadAllowsEntry(int spread)
 {
-   if(!InpFastScalpMode)
-      return true;
-
-   int targetPoints = EffectiveTargetPoints();
-   if(targetPoints <= 0)
-      return true;
-
-   double ratio = InpScalpMaxSpreadTpRatio;
-   if(ratio <= 0.0)
-      return true;
-
-   if(ratio > 1.0)
-      ratio = 1.0;
-
-   int scalpSpreadLimit = (int)MathFloor(targetPoints * ratio);
-   if(scalpSpreadLimit < 1)
-      return true;
-
-   if(spread <= scalpSpreadLimit)
+   int scalpSpreadLimit = ScalpSpreadLimit();
+   if(scalpSpreadLimit <= 0 || spread <= scalpSpreadLimit)
       return true;
 
    SetStatus("Waiting: spread " + IntegerToString(spread) +
-             " is too high for a " + IntegerToString(targetPoints) +
+             " is too high for a " + IntegerToString(EffectiveTargetPoints()) +
              " point target (limit " + IntegerToString(scalpSpreadLimit) + ").");
    LastScalpRiskReason = "Spread too high for the current profit target.";
    return false;
@@ -1946,7 +2126,7 @@ double IndicatorAtrPoints()
    if(CopyClosedBufferValue(AtrHandle, atr) && atr > 0.0 && _Point > 0.0)
       return atr / _Point;
 
-   return CalculateAtrPoints(14);
+   return CalculateAtrPoints(MODEL_ATR_PERIOD);
 }
 
 double IndicatorMaDeltaPoints()
@@ -1961,7 +2141,7 @@ double IndicatorMaDeltaPoints()
       _Point > 0.0)
       return (fastMa - slowMa) / _Point;
 
-   return CalculateMaDeltaPoints(10, 30);
+   return CalculateMaDeltaPoints(MODEL_FAST_MA_PERIOD, MODEL_SLOW_MA_PERIOD);
 }
 
 double IndicatorRsi()
@@ -1971,7 +2151,7 @@ double IndicatorRsi()
    if(CopyClosedBufferValue(RsiHandle, rsi) && rsi >= 0.0 && rsi <= 100.0)
       return rsi;
 
-   return CalculateRsi(14);
+   return CalculateRsi(MODEL_RSI_PERIOD);
 }
 
 double LastClosedRangePoints()
@@ -2127,17 +2307,24 @@ void FinishCycle(string exitReason, int spread, double totalProfit)
       return;
 
    CycleLogged = true;
+   LastDailyLossCheck = 0;
+
+   bool isRealized = false;
+   double finalProfit = ResolveCycleProfit(totalProfit, isRealized);
+
+   if(!isRealized)
+      exitReason += " (floating estimate)";
 
    int durationSeconds = (int)(TimeCurrent() - CycleStartedAt);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
    if(CycleFeaturesCaptured)
-      WriteCycleRow(exitReason, durationSeconds, spread, bid, ask, totalProfit);
+      WriteCycleRow(exitReason, durationSeconds, spread, bid, ask, finalProfit);
    else
       exitReason += " (adopted after restart, no training row)";
 
-   AppendEvent("CYCLE_END", spread, totalProfit, exitReason);
+   AppendEvent("CYCLE_END", spread, finalProfit, exitReason);
 }
 
 void AppendEvent(string eventName, int spread, double totalProfit, string detail)
@@ -2287,6 +2474,9 @@ void ReadDashboardControl(bool forceRead)
    DashboardMaxTurns = 0;
    DashboardMaxSpread = 0;
 
+   bool rawCloseAll = false;
+   string stamp = "";
+
    while(!FileIsEnding(handle))
    {
       string line = FileReadString(handle);
@@ -2301,7 +2491,9 @@ void ReadDashboardControl(bool forceRead)
       if(key == "enabled")
          DashboardEnabled = IsTrueValue(value);
       else if(key == "close_all")
-         DashboardCloseAll = IsTrueValue(value);
+         rawCloseAll = IsTrueValue(value);
+      else if(key == "updated_at")
+         stamp = value;
       else if(key == "initial_lot")
          DashboardInitialLot = StringToDouble(value);
       else if(key == "zone_height")
@@ -2333,6 +2525,10 @@ void ReadDashboardControl(bool forceRead)
    }
 
    FileClose(handle);
+
+   StringTrimRight(stamp);
+   DashboardControlStamp = stamp;
+   DashboardCloseAll = rawCloseAll && stamp != LastCloseAllHandledStamp;
 }
 
 void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool forceWrite=false)
@@ -2404,6 +2600,10 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
    FileWriteString(handle, "last_closed_profit=" + DoubleToString(LastClosedProfit, 2) + "\n");
    FileWriteString(handle, "last_loss_side=" + SideLabel(LastLossSide) + "\n");
    FileWriteString(handle, "scalp_risk_reason=" + LastScalpRiskReason + "\n");
+   FileWriteString(handle, "scalp_spread_limit=" + IntegerToString(ScalpSpreadLimit()) + "\n");
+   FileWriteString(handle, "effective_spread_limit=" + IntegerToString(EffectiveSpreadLimit()) + "\n");
+   FileWriteString(handle, "daily_realized_profit=" + DoubleToString(CachedDailyRealizedProfit, 2) + "\n");
+   FileWriteString(handle, "close_all_ack=" + LastCloseAllHandledStamp + "\n");
    FileWriteString(handle, "model_file_found=" + BoolFlag(ModelFileFound) + "\n");
    FileWriteString(handle, "model_enabled=" + BoolFlag(ModelGateEnabled) + "\n");
    FileWriteString(handle, "model_score=" + DoubleToString(LastModelScore, 4) + "\n");
@@ -2417,39 +2617,7 @@ void WriteDashboardStatus(int spread, bool hasPosition, double totalProfit, bool
 
 void AcknowledgeCloseAllCommand()
 {
-   if(!DashboardControlActive())
-      return;
-
-   int handle = FileOpen(InpControlFile,
-                         FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_ANSI);
-
-   if(handle == INVALID_HANDLE)
-   {
-      SetStatus("Close-all handled, but EA could not clear the control file.");
-      return;
-   }
-
-   FileWriteString(handle, "enabled=0\n");
-   FileWriteString(handle, "close_all=0\n");
-   FileWriteString(handle, "initial_lot=" + DoubleToString(ActiveInitialLot(), 2) + "\n");
-   FileWriteString(handle, "zone_height=" + IntegerToString(ActiveZoneHeight()) + "\n");
-   FileWriteString(handle, "multiplier=" + DoubleToString(ActiveMultiplier(), 2) + "\n");
-   FileWriteString(handle, "target_usd=" + DoubleToString(UnscaleMoney(ActiveTargetUSD()), 2) + "\n");
-   FileWriteString(handle, "quick_target_usd=" + DoubleToString(UnscaleMoney(ActiveQuickTargetUSD()), 2) + "\n");
-   FileWriteString(handle, "max_loss_usd=" + DoubleToString(UnscaleMoney(ActiveMaxFloatingLossUSD()), 2) + "\n");
-   FileWriteString(handle, "allow_recovery=" + BoolFlag(ActiveAllowRecovery()) + "\n");
-   FileWriteString(handle, "take_profit_points=" + IntegerToString(ActiveTakeProfitPoints()) + "\n");
-   FileWriteString(handle, "stop_loss_points=" + IntegerToString(ActiveStopLossPoints()) + "\n");
-   FileWriteString(handle, "max_lot=" + DoubleToString(ActiveMaxLot(), 2) + "\n");
-   FileWriteString(handle, "max_same_side=" + IntegerToString(ActiveMaxSameSidePositions()) + "\n");
-   FileWriteString(handle, "min_same_side_distance=" + IntegerToString(ActiveMinSameSideDistancePoints()) + "\n");
-   FileWriteString(handle, "max_turns=" + IntegerToString(ActiveMaxTurns()) + "\n");
-   FileWriteString(handle, "max_spread=" + IntegerToString(ActiveMaxSpread()) + "\n");
-   FileWriteString(handle, "updated_by=mt5\n");
-   FileWriteString(handle, "ack=close_all\n");
-   FileWriteString(handle, "ack_at=" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\n");
-   FileClose(handle);
-
+   LastCloseAllHandledStamp = DashboardControlStamp;
    DashboardCloseAll = false;
    DashboardEnabled = false;
 }
@@ -2663,7 +2831,7 @@ void DrawDashboard(int spread) {
 
    LastDashboardDrawMs = NowMs();
 
-   string status = (spread <= ActiveMaxSpread()) ? "SAFE" : "TOXIC SPREAD";
+   string status = (spread <= EffectiveSpreadLimit()) ? "SAFE" : "TOXIC SPREAD";
    string dashboard = DashboardControlActive() ? (DashboardEnabled ? "RUNNING" : "PAUSED") : "LOCAL INPUTS";
    string modelStatus = AiFilterActive() ? (ModelGateEnabled ? "ACTIVE" : "RECORDING") : "OFF";
    string entryMode = InpUltraOpenMode ? "ULTRA OPEN" : "STRICT";
@@ -2672,7 +2840,7 @@ void DrawDashboard(int spread) {
    string text = "--- RECOVERY SHIELD ---\n";
    text += "Version: " + EA_BUILD_VERSION + " | Entry: " + entryMode + "\n";
    text += "Current Spread: " + IntegerToString(spread) + "\n";
-   text += "Max Allowed: " + IntegerToString(ActiveMaxSpread()) + "\n";
+   text += "Max Allowed: " + IntegerToString(EffectiveSpreadLimit()) + "\n";
    text += "Status: " + status + "\n";
    text += "Dashboard: " + dashboard + "\n";
    text += "Target: " + DoubleToString(EffectiveQuickTargetUSD(), 2) +

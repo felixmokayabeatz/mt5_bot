@@ -35,6 +35,11 @@
     refreshInFlight = true;
     try {
       const response = await fetch(config.statusUrl, { cache: "no-store" });
+      if (response.status === 401) {
+        window.location.reload();
+        return;
+      }
+
       if (!response.ok) {
         throw new Error(`status request failed: ${response.status}`);
       }
@@ -78,7 +83,10 @@
       setText("symbol", status.symbol || "-");
       setText("spread", status.spread || "-");
       setText("max-spread-status", status.max_spread || control.max_spread || "-");
-      updateSpreadGate(status.spread, status.max_spread || control.max_spread);
+      updateSpreadGate(
+        status.spread,
+        status.effective_spread_limit || status.max_spread || control.max_spread
+      );
       setText("entry-trend", status.entry_trend_signal || "WAIT");
       setText("entry-trend-detail", status.entry_trend_reason || "-");
       setText(
@@ -131,6 +139,7 @@
       setText("validation-selected", model.validation_selected || "0");
       setText("validation-f1", model.validation_f1 || "0.0000");
       setText("validation-profit", model.validation_total_profit || "0.00");
+      setText("validation-baseline", model.validation_baseline_avg_profit || "0.00");
       setText("model-reason", model.reason || "No model file yet.");
       setText("event-rows", counts.events || "0");
       setText("cycle-rows", counts.cycles || "0");

@@ -21,8 +21,10 @@ start.bat lan        Bind 0.0.0.0 so another machine can reach it
 ```
 
 `start.bat lan` also sets `DJANGO_ALLOWED_HOSTS=*` when you have not set it yourself; without
-that Django answers every non-localhost address with HTTP 400. The dashboard has no login, so
-use LAN mode only on a network you trust.
+that Django answers every non-localhost address with HTTP 400. LAN mode turns on sign-in
+(`DASHBOARD_REQUIRE_LOGIN`): the first run asks you to create an account, or reads
+`DASHBOARD_USER` and `DASHBOARD_PASSWORD` if you set them. Five failed attempts from one
+address lock sign-in for five minutes. Use LAN mode only on a network you trust.
 
 `DASHBOARD_HOST` and `DASHBOARD_PORT` still override the defaults if you set them first.
 Point MT5 shared files at the same common files directory used by the app.
@@ -197,7 +199,6 @@ Yes, this can run on a personal server. The simplest reliable setup is a Windows
 For server mode, set these environment variables before starting Django:
 
 ```powershell
-$env:DJANGO_DEBUG = "0"
 $env:DJANGO_SECRET_KEY = "replace-with-a-long-random-secret"
 $env:DJANGO_ALLOWED_HOSTS = "127.0.0.1,localhost,your-domain-or-server-ip"
 $env:MT5_COMMON_FILES_DIR = "$env:APPDATA\MetaQuotes\Terminal\Common\Files"
@@ -205,10 +206,13 @@ $env:MT5_COMMON_FILES_DIR = "$env:APPDATA\MetaQuotes\Terminal\Common\Files"
 
 Keep the dashboard behind a firewall, VPN, or reverse proxy with authentication. The dashboard can start, pause, and close positions, so do not expose it directly to the public internet.
 
-Two things to know when `DJANGO_DEBUG=0`:
+Defaults are production-safe: `DJANGO_DEBUG` is off, and static files are served by WhiteNoise.
+If `DJANGO_SECRET_KEY` is not set, a random key is generated once and stored in
+`.django_secret_key` (git-ignored).
 
-- Cookies default to secure-only. If you serve the dashboard over plain `http://` (no HTTPS reverse proxy), also set `DJANGO_SESSION_COOKIE_SECURE=0` and `DJANGO_CSRF_COOKIE_SECURE=0`, otherwise browsers drop the CSRF cookie and every button press fails with a 403.
-- `runserver` stops serving static files, so the page would load unstyled. The command below passes `--insecure` to keep serving them, which is fine for this private single-user tool. A real web server in front of Django is the alternative.
+- Cookies become secure-only when `DJANGO_SECURE_SSL_REDIRECT=1`. Override with `DJANGO_SESSION_COOKIE_SECURE` and `DJANGO_CSRF_COOKIE_SECURE`.
+- `DJANGO_TRUST_PROXY_SSL_HEADER=1` is only for a reverse proxy that sets `X-Forwarded-Proto`.
+- Sign-in turns on automatically when `DJANGO_ALLOWED_HOSTS` contains anything other than localhost. Force it with `DASHBOARD_REQUIRE_LOGIN=1`.
 
 For a quick private run:
 
@@ -221,6 +225,26 @@ For a quick private run:
 Use a process manager on the server so both MT5 and the dashboard restart after reboots.
 
 ## Changelog
+
+### v1.0.7_17
+
+EA (`volatilty.mq5`, rebuild and reattach it; the dashboard shows a version mismatch until you do):
+
+- Cycle profit in the training CSV and event log is now the realized result from the deal history (profit, commission, swap, fee). It falls back to the last floating value, tagged `(floating estimate)`, only if the exit deal is not in history yet.
+- Close All no longer makes the EA rewrite the control file. The dashboard owns that file; the EA echoes the command's `updated_at` stamp as `close_all_ack` in the status file, so a setting saved at the same moment can no longer be overwritten.
+- New `InpMaxDailyLossUSD` (default 5.0, 0 disables): new entries stop for the rest of the server day once realized losses for this symbol and magic reach the limit.
+- Ultra Open mode now needs both the minimum move and the minimum body, a close on the right side of the fast MA, and a spread-scaled minimum move. Its RSI blocks default to 85 and 15 so they actually apply.
+- Every entry RSI limit and the strict and pullback move factors are now inputs (group `Entry RSI Limits`) with the old values as defaults.
+- The effective spread limit (the lower of `InpMaxSpread` and the scalp spread gate) is shown on the chart and in the dashboard spread check.
+- Inputs are validated on start, and a failed indicator handle stops the EA with a clear message.
+- EA input defaults for multiplier, quick target, loss cap and recovery lot now equal the dashboard defaults, and a test keeps them in sync.
+
+Dashboard and tooling:
+
+- Sign-in (Django accounts) is required automatically for any non-localhost `DJANGO_ALLOWED_HOSTS`, with a five-failure lockout. `start.bat` creates the first account.
+- `DJANGO_DEBUG` now defaults to off, static files are served by WhiteNoise, and a random secret key is generated and stored in `.django_secret_key` when none is set.
+- The trainer tunes the threshold on one part of the validation rows and judges it on a held-out part. The model is enabled only when the held-out result beats the unfiltered baseline by more than its standard error; otherwise the model file is recording-only.
+- The dashboard labels the training figures as in-sample and shows the validation baseline.
 
 ### v1.0.7_15
 

@@ -12,7 +12,7 @@ MODEL_FILE_NAME = "recovery_shield_model.txt"
 VERSION_FILE_NAME = "recovery_shield_version.txt"
 _ROW_COUNT_CACHE = {}
 APP_VERSION = "v1.0.7"
-EA_BUILD_NUMBER = "16"
+EA_BUILD_NUMBER = "17"
 EA_VERSION = f"{APP_VERSION}_{EA_BUILD_NUMBER}"
 STATUS_STALE_SECONDS = 15
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -189,6 +189,7 @@ def read_model():
         "validation_f1": "0.0000",
         "validation_avg_profit": "0.00",
         "validation_total_profit": "0.00",
+        "validation_baseline_avg_profit": "0.00",
         "training_selected": "0",
         "training_coverage": "0.0000",
         "training_accuracy": "0.0000",
@@ -264,6 +265,10 @@ def runtime_state(control, status, version, status_age_seconds=None):
             None if status_age_seconds is None else round(status_age_seconds, 1)
         ),
         "version_mismatch": version_mismatch,
+        "close_all_pending": (
+            control.get("close_all") == "1"
+            and status.get("close_all_ack", "") != control.get("updated_at", "")
+        ),
         "badge_label": badge_label,
         "badge_state": badge_state,
     }

@@ -1,6 +1,7 @@
 import csv
 import math
 import os
+import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +23,8 @@ MAX_TRAINING_ROWS = 5000
 MIN_CLASS_ROWS = 5
 VALIDATION_MIN_ROWS = 10
 VALIDATION_FRACTION = 0.25
+TUNE_FRACTION = 0.6
+MIN_GATE_VALIDATION_ROWS = 20
 TRAINING_STEPS = 2500
 LEARNING_RATE = 0.05
 L2 = 0.001
@@ -333,37 +336,44 @@ def validation_split(rows):
 
     return training_rows, validation_rows
 
+def unvalidated_metadata(validation_count=0, baseline=None):
+    metadata = {
+        "threshold_source": "unvalidated",
+        "validation_rows": str(validation_count),
+        "validation_selected": "0",
+        "validation_f1": "0.0000",
+        "validation_avg_profit": "0.00",
+        "validation_total_profit": "0.00",
+    }
+    if baseline is not None:
+        metadata["validation_baseline_avg_profit"] = f"{baseline:.4f}"
+    return metadata
+
+def mean_profit(rows):
+    return sum(row["profit"] for row in rows) / len(rows)
+
 def choose_threshold(rows):
     if THRESHOLD_OVERRIDE is not None:
-        return active_threshold(), {
-            "threshold_source": "env",
-            "validation_rows": "0",
-            "validation_selected": "0",
-            "validation_f1": "0.0000",
-            "validation_avg_profit": "0.00",
-            "validation_total_profit": "0.00",
-        }
+        metadata = unvalidated_metadata()
+        metadata["threshold_source"] = "env"
+        return active_threshold(), metadata
 
     training_rows, validation_rows = validation_split(rows)
-    if not training_rows:
-        return DEFAULT_THRESHOLD, {
-            "threshold_source": "default",
-            "validation_rows": "0",
-            "validation_selected": "0",
-            "validation_f1": "0.0000",
-            "validation_avg_profit": "0.00",
-            "validation_total_profit": "0.00",
-        }
+    if not training_rows or len(validation_rows) < MIN_GATE_VALIDATION_ROWS:
+        return DEFAULT_THRESHOLD, unvalidated_metadata()
+
+    tune_count = int(len(validation_rows) * TUNE_FRACTION)
+    tune_rows = validation_rows[:tune_count]
+    confirm_rows = validation_rows[tune_count:]
 
     weights, bias, mean, scale = train(training_rows)
     best_threshold = DEFAULT_THRESHOLD
-    best_stats = None
     best_objective = None
-    minimum_selected = max(2, len(validation_rows) // 5)
+    minimum_selected = max(2, len(tune_rows) // 5)
 
     for point in range(35, 86):
         threshold = point / 100.0
-        stats = evaluate_rows(validation_rows, weights, bias, mean, scale, threshold)
+        stats = evaluate_rows(tune_rows, weights, bias, mean, scale, threshold)
         if stats["selected"] < minimum_selected:
             continue
 
@@ -371,30 +381,41 @@ def choose_threshold(rows):
         if best_objective is None or objective > best_objective:
             best_objective = objective
             best_threshold = threshold
-            best_stats = stats
 
-    if best_stats is None:
-        return DEFAULT_THRESHOLD, {
-            "threshold_source": "default",
-            "validation_rows": str(len(validation_rows)),
-            "validation_selected": "0",
-            "validation_f1": "0.0000",
-            "validation_avg_profit": "0.00",
-            "validation_total_profit": "0.00",
-        }
+    baseline = mean_profit(confirm_rows)
+    if best_objective is None:
+        return DEFAULT_THRESHOLD, unvalidated_metadata(len(confirm_rows), baseline)
+
+    confirmed = evaluate_rows(confirm_rows, weights, bias, mean, scale, best_threshold)
+    minimum_confirmed = max(3, len(confirm_rows) // 10)
+    spread = statistics.pstdev([row["profit"] for row in confirm_rows])
+    margin = spread / math.sqrt(confirmed["selected"]) if confirmed["selected"] else 0.0
+    passes = (
+        confirmed["selected"] >= minimum_confirmed
+        and confirmed["avg_profit"] > baseline + margin
+    )
 
     return best_threshold, {
-        "threshold_source": "validation",
-        "validation_rows": str(best_stats["rows"]),
-        "validation_selected": str(best_stats["selected"]),
-        "validation_f1": f"{best_stats['f1']:.4f}",
-        "validation_accuracy": f"{best_stats['accuracy']:.4f}",
-        "validation_precision": f"{best_stats['precision']:.4f}",
-        "validation_recall": f"{best_stats['recall']:.4f}",
-        "validation_win_rate": f"{best_stats['win_rate']:.4f}",
-        "validation_avg_profit": f"{best_stats['avg_profit']:.2f}",
-        "validation_total_profit": f"{best_stats['total_profit']:.2f}",
+        "threshold_source": "validation" if passes else "validation_rejected",
+        "validation_baseline_avg_profit": f"{baseline:.4f}",
+        "validation_rows": str(confirmed["rows"]),
+        "validation_selected": str(confirmed["selected"]),
+        "validation_f1": f"{confirmed['f1']:.4f}",
+        "validation_accuracy": f"{confirmed['accuracy']:.4f}",
+        "validation_precision": f"{confirmed['precision']:.4f}",
+        "validation_recall": f"{confirmed['recall']:.4f}",
+        "validation_win_rate": f"{confirmed['win_rate']:.4f}",
+        "validation_avg_profit": f"{confirmed['avg_profit']:.2f}",
+        "validation_total_profit": f"{confirmed['total_profit']:.2f}",
     }
+
+GATE_REJECTIONS = {
+    "unvalidated": (
+        f"Not enough closed cycles to validate the filter out of sample "
+        f"(need at least {MIN_GATE_VALIDATION_ROWS * 4})."
+    ),
+    "validation_rejected": "Held-out check did not beat the unfiltered baseline. Recording only.",
+}
 
 def main():
     path = cycle_log_path()
@@ -420,6 +441,13 @@ def main():
         return 0
 
     threshold, metadata = choose_threshold(rows)
+    rejection = GATE_REJECTIONS.get(metadata.get("threshold_source"))
+    if rejection:
+        target = write_model(False, rejection, rows, metadata=metadata)
+        print(f"[trainer] {rejection}", flush=True)
+        print(f"[trainer] wrote recording-only model: {target}", flush=True)
+        return 0
+
     weights, bias, mean, scale = train(rows)
     training_stats = evaluate_rows(rows, weights, bias, mean, scale, threshold)
     metadata.update(

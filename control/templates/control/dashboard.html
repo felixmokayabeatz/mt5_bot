@@ -19,6 +19,12 @@
           | Compiled <span id="compiled-header-version">{{ version.ea_version }}</span>
         </p>
       </div>
+      {% if user.is_authenticated %}
+        <form method="post" action="{% url 'logout' %}">
+          {% csrf_token %}
+          <button class="btn neutral" type="submit">Sign out</button>
+        </form>
+      {% endif %}
       <div class="status-pill" data-enabled="{{ control.enabled }}" data-state="{{ runtime_state.badge_state }}">
         {{ runtime_state.badge_label }}
       </div>
@@ -291,15 +297,15 @@
             <dd id="threshold-source">{{ model.threshold_source|default:"default" }}</dd>
           </div>
           <div>
-            <dt>Training selected</dt>
+            <dt>In-sample selected</dt>
             <dd id="training-selected">{{ model.training_selected|default:"0" }}</dd>
           </div>
           <div>
-            <dt>Training F1</dt>
+            <dt>In-sample F1</dt>
             <dd id="training-f1">{{ model.training_f1|default:"0.0000" }}</dd>
           </div>
           <div>
-            <dt>Training profit</dt>
+            <dt>In-sample profit</dt>
             <dd id="training-profit">{{ model.training_total_profit|default:"0.00" }}</dd>
           </div>
           <div>
@@ -317,6 +323,8 @@
           <div>
             <dt>Validation profit</dt>
             <dd id="validation-profit">{{ model.validation_total_profit|default:"0.00" }}</dd>
+            <dt>Validation baseline avg</dt>
+            <dd id="validation-baseline">{{ model.validation_baseline_avg_profit|default:"0.00" }}</dd>
           </div>
           <div>
             <dt>Reason</dt>

@@ -8,6 +8,8 @@ from django.contrib import messages
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 
+from .auth import dashboard_access
+
 from .services import (
     SettingsError,
     apply_control_preset,
@@ -41,6 +43,7 @@ def store_control(request, control):
 
     return True
 
+@dashboard_access
 def dashboard(request):
     control = read_control()
 
@@ -92,6 +95,7 @@ def dashboard(request):
             control["close_all"] = "1"
             notify, text = messages.warning, "Close-all command sent."
         else:
+            control["close_all"] = "0"
             notify, text = messages.success, "Settings saved."
 
         if not store_control(request, control):
@@ -120,6 +124,7 @@ def dashboard(request):
     }
     return render(request, "control/dashboard.html", context)
 
+@dashboard_access
 def status_api(request):
     control = read_control()
     status = read_status()

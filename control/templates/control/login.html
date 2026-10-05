@@ -1,0 +1,31 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recovery Shield Sign In</title>
+  <link rel="stylesheet" href="{% static 'control/styles.css' %}">
+</head>
+<body>
+  <main class="shell">
+    <form method="post" class="panel control-panel">
+      {% csrf_token %}
+      <h1>Recovery Shield</h1>
+      {% if form.errors %}
+        <div class="message error">Wrong username or password.</div>
+      {% endif %}
+      <label class="field">
+        <span>Username</span>
+        <input name="username" autocomplete="username" autofocus required>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <input type="hidden" name="next" value="{{ next }}">
+      <button class="btn primary" type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

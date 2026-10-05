@@ -9,10 +9,16 @@ from unittest import mock
 
 from django.conf import settings
 from django.contrib.staticfiles import finders
-from django.test import SimpleTestCase, TestCase
+from decimal import Decimal
+
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from .services import (
     APP_VERSION,
+    DEFAULT_CONTROL,
     EA_BUILD_NUMBER,
     EA_VERSION,
     SettingsError,
@@ -120,7 +126,7 @@ class ServiceTests(SimpleTestCase):
         os.environ["MT5_COMMON_FILES_DIR"] = temp_dir
         try:
             self.assertEqual(read_version()["app_version"], "v1.0.7")
-            self.assertEqual(read_version()["ea_version"], "v1.0.7_16")
+            self.assertEqual(read_version()["ea_version"], "v1.0.7_17")
         finally:
             if previous is None:
                 os.environ.pop("MT5_COMMON_FILES_DIR", None)
@@ -306,14 +312,14 @@ class DashboardViewTests(CommonFilesDirMixin, TestCase):
 
         response = self.client.get("/")
 
-        self.assertContains(response, "v1.0.7_16")
+        self.assertContains(response, "v1.0.7_17")
 
     def test_status_api_reports_the_compiled_version(self):
         self.use_temp_common_dir()
 
         payload = self.client.get("/api/status/").json()
 
-        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_16")
+        self.assertEqual(payload["version"]["ea_version"], "v1.0.7_17")
         self.assertEqual(payload["runtime_state"]["badge_state"], "paused")
 
     def test_training_failure_message_uses_last_trainer_line(self):
@@ -342,8 +348,8 @@ class StaleStatusTests(SimpleTestCase):
     def state(self, enabled, age):
         return runtime_state(
             {"enabled": enabled},
-            {"ea_version": "v1.0.7_16"},
-            {"ea_version": "v1.0.7_16"},
+            {"ea_version": "v1.0.7_17"},
+            {"ea_version": "v1.0.7_17"},
             status_age_seconds=age,
         )
 
@@ -570,3 +576,175 @@ class SourceHygieneTests(SimpleTestCase):
         self.assertEqual(build, EA_BUILD_NUMBER)
         self.assertEqual(app, APP_VERSION)
         self.assertEqual(full, EA_VERSION)
+
+
+class LoginProtectionTests(CommonFilesDirMixin, TestCase):
+    def setUp(self):
+        cache.clear()
+        self.use_temp_common_dir()
+        self.user = get_user_model().objects.create_user("owner", password="correct-horse-battery")
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=True)
+    def test_page_redirects_anonymous_visitors_to_sign_in(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response["Location"].startswith("/login/"))
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=True)
+    def test_status_api_answers_401_instead_of_redirecting(self):
+        self.assertEqual(self.client.get("/api/status/").status_code, 401)
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=True)
+    def test_post_actions_are_blocked_without_sign_in(self):
+        directory = self.use_temp_common_dir()
+        response = self.client.post("/", {"action": "close_all"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse((directory / "recovery_shield_control.txt").exists())
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=True)
+    def test_signed_in_user_reaches_the_dashboard(self):
+        self.client.login(username="owner", password="correct-horse-battery")
+
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.get("/api/status/").status_code, 200)
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=False)
+    def test_dashboard_stays_open_when_login_is_not_required(self):
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=True, LOGIN_MAX_FAILURES=3)
+    def test_repeated_failures_lock_sign_in(self):
+        for _ in range(3):
+            response = self.client.post("/login/", {"username": "owner", "password": "wrong"})
+            self.assertEqual(response.status_code, 200)
+
+        locked = self.client.post("/login/", {"username": "owner", "password": "correct-horse-battery"})
+
+        self.assertEqual(locked.status_code, 429)
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=True, LOGIN_MAX_FAILURES=3)
+    def test_successful_sign_in_resets_the_failure_counter(self):
+        self.client.post("/login/", {"username": "owner", "password": "wrong"})
+        ok = self.client.post("/login/", {"username": "owner", "password": "correct-horse-battery"})
+
+        self.assertEqual(ok.status_code, 302)
+        self.assertEqual(cache.get("dashboard-login-failures:127.0.0.1", 0), 0)
+
+
+class EnsureDashboardUserTests(TestCase):
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=False)
+    def test_nothing_is_created_when_login_is_not_required(self):
+        call_command("ensure_dashboard_user")
+
+        self.assertFalse(get_user_model().objects.exists())
+
+    @override_settings(DASHBOARD_REQUIRE_LOGIN=True)
+    def test_account_is_created_from_environment(self):
+        with mock.patch.dict(os.environ, {"DASHBOARD_USER": "boss", "DASHBOARD_PASSWORD": "s3cret-pass-123"}):
+            call_command("ensure_dashboard_user")
+
+        self.assertTrue(get_user_model().objects.get(username="boss").is_superuser)
+
+
+class StaticServingTests(SimpleTestCase):
+    def test_static_files_are_served_without_debug(self):
+        self.assertFalse(settings.DEBUG)
+        response = self.client.get("/static/control/dashboard.js")
+
+        self.assertEqual(response.status_code, 200)
+
+
+class CloseAllProtocolTests(CommonFilesDirMixin, SimpleTestCase):
+    def test_close_all_is_pending_until_the_ea_echoes_the_stamp(self):
+        control = {"enabled": "0", "close_all": "1", "updated_at": "2026-10-05T10:00:00+00:00"}
+
+        pending = runtime_state(control, {}, {"ea_version": EA_VERSION}, 0)
+        handled = runtime_state(control, {"close_all_ack": control["updated_at"]}, {"ea_version": EA_VERSION}, 0)
+
+        self.assertTrue(pending["close_all_pending"])
+        self.assertFalse(handled["close_all_pending"])
+
+    def test_close_all_is_not_pending_when_not_requested(self):
+        control = {"enabled": "0", "close_all": "0", "updated_at": "x"}
+
+        self.assertFalse(runtime_state(control, {}, {"ea_version": EA_VERSION}, 0)["close_all_pending"])
+
+
+class TrainerGateTests(CommonFilesDirMixin, SimpleTestCase):
+    @staticmethod
+    def write_cycles(path, header, reverse_validation):
+        lines = [",".join(header)]
+        for index in range(100):
+            good = index % 2 == 0
+            spread = 10 if good else 50
+            reversed_row = reverse_validation and index >= 75
+            wins = good != reversed_row
+            profit = "1.00" if wins else "-1.00"
+            values = ["1"] * len(header)
+            values[0] = str(spread)
+            values[-1] = profit
+            lines.append(",".join(values))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def trainer_with_rows(self, reverse_validation):
+        directory = self.use_temp_common_dir()
+        trainer = TrainerTests.load_trainer()
+        header = trainer.FEATURES + ["exit_profit"]
+        self.write_cycles(trainer.cycle_log_path(), header, reverse_validation)
+        return trainer, directory
+
+    def test_filter_that_beats_the_baseline_is_enabled(self):
+        trainer, _ = self.trainer_with_rows(False)
+        _, metadata = trainer.choose_threshold(trainer.load_rows(trainer.cycle_log_path()))
+
+        self.assertEqual(metadata["threshold_source"], "validation")
+
+    def test_filter_that_fails_validation_is_recording_only(self):
+        trainer, _ = self.trainer_with_rows(True)
+
+        self.assertEqual(trainer.main(), 0)
+        text = trainer.model_path().read_text(encoding="utf-8")
+
+        self.assertIn("enabled=0", text)
+        self.assertIn("validation_rejected", text)
+
+    def test_filter_that_beats_the_baseline_is_written_enabled(self):
+        trainer, _ = self.trainer_with_rows(False)
+
+        self.assertEqual(trainer.main(), 0)
+
+        self.assertIn("enabled=1", trainer.model_path().read_text(encoding="utf-8"))
+
+
+class EaDefaultsMatchDashboardTests(SimpleTestCase):
+    MAPPING = {
+        "InitialLot": "initial_lot",
+        "ZoneHeight": "zone_height",
+        "Multiplier": "multiplier",
+        "TargetUSD": "target_usd",
+        "MaxTurns": "max_turns",
+        "InpMaxSpread": "max_spread",
+        "InpQuickBasketProfitUSD": "quick_target_usd",
+        "InpMaxFloatingLossUSD": "max_loss_usd",
+        "InpTakeProfitPoints": "take_profit_points",
+        "InpStopLossPoints": "stop_loss_points",
+        "InpMaxRecoveryLot": "max_lot",
+        "InpMaxSameSidePositions": "max_same_side",
+        "InpMinSameSideDistancePoints": "min_same_side_distance",
+    }
+
+    def test_ea_input_defaults_equal_dashboard_defaults(self):
+        source = (Path(settings.BASE_DIR) / "volatilty.mq5").read_text(encoding="utf-8")
+        inputs = dict(re.findall(r"^input\s+\w+\s+(\w+)\s*=\s*([^;]+);", source, re.MULTILINE))
+
+        for ea_name, control_key in self.MAPPING.items():
+            self.assertEqual(
+                Decimal(inputs[ea_name].strip()),
+                Decimal(DEFAULT_CONTROL[control_key]),
+                ea_name,
+            )
+
+        self.assertEqual(inputs["InpAllowRecovery"].strip(), "false")
+        self.assertEqual(DEFAULT_CONTROL["allow_recovery"], "0")
